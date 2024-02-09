@@ -864,6 +864,7 @@ class TriLmp():
                 units lj
                 dimension 3
                 package omp 0
+                boundary     f f f
 
                 atom_style    {atom_style_text}
                 atom_modify sort 0 0.0
