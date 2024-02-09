@@ -1,69 +1,10 @@
-"""
-#####################################################################################################################
-#####################################################################################################################
-TriLmp - Combining TRIMEM and LAMMPS to enable versatile MD simulations using triangulated mesh membranes
-
-This program was created during the summer of 2023 by Michael Wassermair in the course of an internship
-in the Saric Group (ISTA). It is based on the software TRIMEM, which was originally intended to perform
-Hybric Monte Carlo (HMC) energy minimization of the Helfrich Hamiltonian using a vertex-averaged
-triangulared mesh discretisation. By connecting the latter with LAMMPS we expose the mesh vertices
-defining the membrane to interactions with external particles using LAMMPS pair_ or bond_styles.
-
-The program is dependent on a modified version of trimem and LAMMPS using specific packages
-and the additional pair_styles nonreciprocal and nonreciprocal/omp
-
-MMB: The NR packages are pending to be updated
-
-See SETUP_GUIDE.txt for details.
-
-The (original) overall structure of the programm is
-
-- Internal classes used by TriLmp
-- TriLmp Object
-
---- Default Parameters -> description of all parameters
---- Initialization of Internal classes using parameters
---- Init. of TRIMEM EnergyManager used for gradient/energy of helfrich hamiltonian
-
---- LAMMPS initialisation
----+++ Creating instances of lmp
----+++ Setting up Basic system
----+++ Calling Lammps functions to set thermostat and interactions
-
---- FLIPPING Functions
---- HMC/MD Functions + Wrapper Functions used on TRIMEM side
---- RUN Functions -> simulation utility to be used in script
---- CALLBACK and OUTPUT
---- Some Utility Functions
---- Minimize Function -> GD for preconditionining states for HMC
---- Pickle + Checkpoint Utility
---- LAMMPS scrips used for setup
-
-#####################################################################################################################
-
-Currently the code is maintained by Maitane Munoz Basagoiti (MMB) and Miguel Amaral (MA)
-
-# ---------------------------
-UPDATE LOG ON THE CODE
-# ---------------------------
-19/10/23 MMB starts adding model for external S-layer
-         Code can now include additional elastic membrane
-01/12/23 MMB starts adding rigid body extension
-         Symbionts can be rigid bodies now
-17/01/24 MMB adds GCMC fix
-         It is possible to have regions with chemostated metabolites
-30/01/24 MMB adds fix bond/react
-
-#####################################################################################################################
-#####################################################################################################################
-"""
 
 import re,textwrap
 from typing import Sequence
 _sp = u'\U0001f604'
 _nl = '\n'+_sp
 def block(s):
-    return _nl.join(s.split('\n'))
+	return _nl.join(s.split('\n'))
 def dedent(s):
     ls = s.split('\n')
     if ls[-1]=='':
@@ -82,25 +23,79 @@ def dedent(s):
     return textwrap.dedent('\n'.join(ls))
 
 
+
 import warnings
 from datetime import datetime, timedelta
 import psutil
-import os, sys, time
+import os
+
 from copy import copy
+
 import trimesh
 from .. import core as m
 from trimem.core import TriMesh
 from trimem.mc.mesh import Mesh
+
 from trimem.mc.output import make_output
 from collections import Counter
+
 import pickle
 import pathlib
+
 import numpy as np
+import time
 from scipy.optimize import minimize
+
 import trimem.mc.trilmp_h5
+
+
+
+
+
+
 from ctypes import *
 from lammps import lammps, PyLammps, LAMMPS_INT, LMP_STYLE_GLOBAL, LMP_VAR_EQUAL, LMP_VAR_ATOM, LMP_TYPE_SCALAR, LMP_TYPE_VECTOR, LMP_TYPE_ARRAY, LMP_SIZE_VECTOR, LMP_SIZE_ROWS, LMP_SIZE_COLS
 
+
+###############################################################################################
+"""
+TriLmp - Combinig TRIMEM and LAMMPS to enable versatile MD simulations using triangulated mesh membranes
+
+This program was created in 2023 by Michael Wassermair in the course of an internship in the Saric Group (ISTA).
+It is based on the software TRIMEM, which was originally intended to perform
+HMC energy minimization of the Helfrich Hamiltonian using a vertex-averaged triangulared mesh discretisation.
+By connecting the latter with LAMMPS we expose the mesh vertices defining the membrane to interactions with external
+particles using LAMMPS pair_ or bond_styles.
+
+It is dependent on a modified version of trimem and LAMMPS using specific packages 
+and the additional pair_styles nonreciprocal and nonreciprocal/omp 
+See SETUP_GUIDE.txt for details.
+
+The overall structure of the programm is 
+
+-Internal classes used by TriLmp
+-TriLmp Object
+
+-- Default Parameters -> description of all parameters
+-- Initialization of Internal classes using parameters
+-- Init. of TRIMEM EnergyManager used for gradient/energy of helfrich hamiltonian
+
+-- LAMMPS initialisation
+--- Creating instances of lmp
+--- Setting up Basic system
+--- calling Lammps functions to set thermostat and interactions
+
+-- FLIPPING Functions  
+-- HMC/MD Functions + Wrapper Functions used on TRIMEM side
+-- RUN Functions -> simulation utility to be used in script
+-- CALLBACK and OUTPUT 
+-- Some Utility Functions
+-- Minimize Function -> GD for preconditionining states for HMC
+-- Pickle + Checkpoint Utility
+-- LAMMPS scrips used for setup
+
+
+"""
 ########################################################################
 #                   INTERNAL CLASSES TO BE USED BY TriLmP              #
 ########################################################################
@@ -115,6 +110,7 @@ class Timer():
         self.timestamps=ts_default
         self.start=stime
 
+
 class InitialState():
     def __init__(self,area,volume,curvature,bending,tethering):
         """Storage for reference properties to reinitialize Estore after Reset. In case of reinstating Surface
@@ -124,7 +120,7 @@ class InitialState():
         self.curvature=curvature
         self.bending=bending
         self.tethering=tethering
-
+        
 class Beads():
     def __init__(self,n_types,bead_int,bead_int_params,bead_pos,bead_vel,bead_sizes,bead_masses,bead_types,self_interaction,self_interaction_params):
         """Storage for Bead parameters.
@@ -164,6 +160,7 @@ class Beads():
         self.bead_sizes=bead_sizes                      ## diameter
         self.self_interaction=self_interaction
         self.self_interaction_params=self_interaction_params
+
 
 class OutputParams():
     """Containter for parameters related to the output option """
@@ -212,7 +209,6 @@ class AlgoParams():
                  refresh,
                  thermal_velocities,
                  langevin_thermostat,
-                 brownian_dynamics,
                  langevin_damp,
                  langevin_seed,
                  pure_MD,
@@ -236,13 +232,13 @@ class AlgoParams():
         self.refresh=refresh
         self.thermal_velocities=thermal_velocities
         self.langevin_thermostat=langevin_thermostat
-        self.brownian_dynamics=brownian_dynamics
         self.langevin_damp=langevin_damp
         self.langevin_seed=langevin_seed
         self.pure_MD=pure_MD
         self.switch_mode=switch_mode
         self.box=box
         self.additional_command=additional_command
+
 
 
 ###############################################################
@@ -255,30 +251,18 @@ class TriLmp():
                  ##############################################
                  #             DEFAULT PARAMETERS             #
                  ##############################################
-                 #INITIALIZATION
+                 #Initialization
                  initialize=True,     # Determines if mesh is used as new reference in estore
-
-                 #MEMBRANE MESH
+                 #MESH
                  mesh_points=None,    # positions of membrane vertices
                  mesh_faces=None,     # faces defining mesh
                  mesh_velocity=None,  # initial velocities
-
-                 #S-LAYER
-                 slayer = False,            # whether the simulation will have an slayer or not
-                 slayer_points=[],          # positions S-layer vertices
-                 slayer_bonds = [],         # bonds that make the S-layer
-                 slayer_dihedrals = [],     # dihedrals for the elastic membrane
-                 slayer_kbond=1,            # harmonic potential of the layer
-                 slayer_rlbond=2**(1.0/6.0),# rest length of the bonds
-                 slayer_kdihedral=1,        # bending energy dihedral
-
                  #BOND
                  bond_type='Edge',      # 'Edge' or 'Area
                  bond_r=2,              # steepness of potential walls
                  lc0=None,              # upper onset ('Edge') default will be set below
                  lc1=None,              # lower onset ('Edge')
                  a0=None,               # reference face area ('Area')
-
                  #SURFACEREPULSION
                  n_search="cell-list",  # neighbour list types ('cell and verlet') -> NOT USED TODO
                  rlist=0.1,             # neighbour list cutoff -> NOT USED TODO
@@ -323,91 +307,50 @@ class TriLmp():
                  #################################################################################################
                  thermal_velocities=False,      # thermal reset of velocities at the begin of each MD step
                  langevin_thermostat=True,      # uses langevin thermostat to
-                 brownian_dynamics=False,       # uses fix brownian
                  langevin_damp=0.03,            # damping time for thermostat
                  langevin_seed=1,               # seed for thermostat noise
                  pure_MD=True,                  # accept every MD trajectory
-                 equilibrated=False,            # should one consider equilibrating the membrane
-                 equilibration_rounds=-1,       # number of equilibration rounds
                  switch_mode='random',          # 'random' or 'alernating' -> either random choice of flip-or-move
                  box=(-10,10,-10,10,-10,10),    # Simulation BOX (periodic)
-                 check_outofrange = False,      # Stop simulation if a single nanoparticle is out of range
-                 check_outofrange_freq=100,     # how often should you check that the system is broken
-                 check_outofrange_cutoff=100,   # when is the nanoparticle too far away from the membrane
-
-                 print_bending_energy=False,    # output the bending energy
-
-                 # PULL A TUBE BY DRAGGING MEMBRANE BEAD
-                 fix_drag=False,
-                 fix_drag_fmag=0.0,
-                 fix_drag_coord=np.zeros(3),
-                 fix_drag_id=-1,
-
-                 # RIGID SYMBIONT
-                 fix_rigid_symbiont=False,
-                 fix_rigid_symbiont_coordinates=None,
-                 fix_rigid_symbiont_interaction=None,
-                 fix_rigid_symbiont_params=None,
-
-                 # GCMC METABOLITES
-                 fix_gcmc=False,
-                 fix_gcmc_region_type='block',
-                 fix_gcmc_region_parameters=None,
-                 fix_gcmc_fix_parameters=None,
-                 fix_gcmc_interaction_parameters=None,
-                 fix_gcmc_flag=0,
-                 fix_gcmc_num_regions=0,
-
-                 # FIX BOND REACT OF METABOLITES
-                 fix_bond_react=False,
-                 fix_bond_react_reactions=0,
-                 fix_bond_react_reactions_parameters=None,
-                 fix_bond_react_interactions=None,
-                 fix_bond_react_flag=0,
-
-                 # MAKE TIME-DEPENDENT INTERACTION
-                 fix_time_dependent_interaction=False,
-
-                 # ADD ADDITIONAL LAMMPS COMMANDS - MMB UPDATE: In general, not so simple to do this (many clashes with HD stuff), hence the changes
                  additional_command=None,        # add a LAMMPS command """ COMMAND 1
-                                                 #                          COMMAND 2  ...    """ at the end of LAMMPS initialisation
+                                                #                          COMMAND 2  ...    """ at the end of LAMMPS initialisation
 
-                 # OUTPUT
+
+
+                 #OUTPUT
                  info=10,              # output hmc and flip info to shell every nth step
                  thin=10,              # output trajectory every nth step
                  out_every= 0,         # output minimize state every nth step (only for gradient minimization)
-                 input_set='inp.stl',  # hast to be stl file or if True uses mesh -> NOT USED
+
+                 input_set='inp.stl',  # hast to be stl file or if True uses mesh -> NOT USED TODO
                  output_prefix='inp',  # name of simulation files
                  restart_prefix='inp', # name for checkpoint files
                  checkpoint_every= 1,  # checkpoint every nth step
-                 output_format='xyz',  # output format for trajectory -> NOT YET (STATISFYINGLY) IMPLEMENTED
-
-                 check_neigh_every=1,
+                 output_format='xyz',  # output format for trajectory -> NOT YET (STATISFYINGLY) IMPLEMENTED TODO
 
                  output_flag='A',      # initial flag for output (alternating A/B)
                  output_counter=0,     # used to initialize (outputted) trajectory number in writer classes
                  performance_increment=1000,  # print performance stats every nth step to output_prefix_performance.dat
                  energy_increment=250,        # print total energy to energy.dat
 
-                 # REFERENCE STATE DATA
+                # REFERENCE STATE DATA
                  area=1.0,                    # placeholders to be filled by reference state parameters (used to reinitialize estore)
                  volume=1.0,
                  curvature=1.0,
                  bending=1.0,
                  tethering=1.0,
                  #repulsion=1.0,             # would be used if surface repulsion was handeld by TRIMEM
-
-                 # TIMING UTILITY
+                # TIMING UTILITY
                  ptime=time.time(),  #
                  ptimestamp=[],      # used to time performence stats
                  dtimestamp=[],
                  timearray=np.zeros(2),
                  timearray_new=np.zeros(2),
                  stime=datetime.now(),
-
-                 # COUNTERS
+                # COUNTERS
                  move_count=0,   #move counts (to initialize with)
                  flip_count=0,   #flip counts (to initialize with) -> use this setting to set a start step (move+flip)
+
 
                  # BEADS (see Bead class for details)
                  n_types=0,
@@ -422,122 +365,43 @@ class TriLmp():
                  self_interaction_params=(0,0)
                  ):
 
-
+        
        ##################################
        #    SOME MINOR PREREQUESITES    #
        ##################################
 
         # initialize using mesh arguments?
         self.initialize = initialize
-        self.equilibrated = equilibrated
-        self.equilibration_rounds = equilibration_rounds
         self.acceptance_rate = 0.0
-
-        # used in run() to stop simulation in case nanop stops binding
-        self.check_outofrange=check_outofrange
-        self.check_outofrange_freq=check_outofrange_freq
-        self.check_outofrange_cutoff=check_outofrange_cutoff
-
-        # used in run() for gcmc simulations
-        self.fix_gcmc=fix_gcmc
-        self.fix_gcmc_fix_parameters=fix_gcmc_fix_parameters
-        self.fix_gcmc_region_type=fix_gcmc_region_type
-        self.fix_gcmc_region_parameters=fix_gcmc_region_parameters
-        self.fix_gcmc_interaction_parameters=fix_gcmc_interaction_parameters
-        self.fix_gcmc_num_regions=fix_gcmc_num_regions
-        self.fix_gcmc_flag=fix_gcmc_flag
-        if self.fix_gcmc:
-            self.fix_gcmc_flag = 1
-
-        # used when fix bond react
-        self.fix_bond_react = fix_bond_react
-        self.fix_bond_react_reactions = fix_bond_react_reactions
-        self.fix_bond_react_reactions_parameters = fix_bond_react_reactions_parameters
-        self.fix_bond_react_flag=fix_bond_react_flag
-        if self.fix_bond_react:
-            self.fix_bond_react_flag=1
-
-        # used in interaction function
-        self.fix_time_dependent_interaction = fix_time_dependent_interaction
-
-        # used for minimization
+        # used for minim
         self.flatten = True
         if self.flatten:
             self._ravel = lambda x: np.ravel(x)
         else:
             self._ravel = lambda x: x
 
-        # different bond types used for tether potential in TRIMEM
+        # different bond types  (used for tether potential in TRIMEM)
         self._bond_enums = {
             "Edge": m.BondType.Edge,
             "Area": m.BondType.Area
         }
 
-        # used in outout programs
-        self.print_bending_energy = print_bending_energy
 
         #########################
         #         MESH          #
         #########################
-
         # Argument: mesh should be Mesh object gets converted to Mesh.trimesh (TriMesh) internally
         self.mesh = Mesh(points=mesh_points, cells=mesh_faces)
-
         if pure_MD:
             self.mesh_temp=0
         else:
             self.mesh_temp = Mesh(points=mesh_points, cells=mesh_faces)
-
         self.mesh_velocity=mesh_velocity
         self.n_vertices=self.mesh.x.shape[0]
-        self.check_neigh_every = check_neigh_every
-
-        #################################################
-        # OPTIONAL: S-LAYER (EXTERNAL ELASTIC MEMBRANE) #
-        #################################################
-
-        self.n_slayer = 0
-        self.slayer = slayer
-        self.slayer_points=slayer_points
-        self.slayer_bonds = slayer_bonds
-        self.slayer_dihedrals = slayer_dihedrals
-        self.slayer_kbond=slayer_kbond
-        self.slayer_rlbond=slayer_rlbond
-        self.slayer_kdihedral=slayer_kdihedral
-
-        self.n_slayer_dihedrals = 0
-        self.n_slayer_bonds = 0
-        self.slayer_flag = 0
-
-        if self.slayer:
-            self.n_slayer = len(self.slayer_points)
-            self.n_slayer_dihedrals = len(self.slayer_dihedrals)
-            self.n_slayer_bonds = len(self.slayer_bonds)
-            self.slayer_flag = 1
-
-        ###########################################################
-        # OPTIONAL: FIX RIGID SYMBIONT  (A RIGID BODY SYMBIONT)   #
-        ###########################################################
-
-        self.fix_rigid_symbiont=fix_rigid_symbiont
-        self.fix_rigid_symbiont_coordinates=fix_rigid_symbiont_coordinates
-        self.fix_rigid_symbiont_nparticles=0
-        self.fix_rigid_symbiont_flag=0
-
-        if self.fix_rigid_symbiont:
-            self.fix_rigid_symbiont_nparticles  = len(self.fix_rigid_symbiont_coordinates)
-            self.fix_rigid_symbiont_interaction = fix_rigid_symbiont_interaction
-            self.fix_rigid_symbiont_params      = fix_rigid_symbiont_params
-            self.fix_rigid_symbiont_flag        = 1
-
-            if len(self.fix_rigid_symbiont_params)<1:
-                print("ERROR: Not enough parameters for fix rigid symbiont")
-                sys.exit(1)
 
         #######################
         #        BEADS        #
         #######################
-
         self.beads=Beads(n_types,
                          bead_int,
                          bead_int_params,
@@ -549,10 +413,10 @@ class TriLmp():
                          self_interaction,
                          self_interaction_params)
 
+
         #######################
         #   BONDS/TETHERS     #
         #######################
-
         self.bparams = m.BondParams()
         if issubclass(type(bond_type), str):
             self.bparams.type = self._bond_enums[bond_type]
@@ -560,51 +424,54 @@ class TriLmp():
             self.bparams.type=bond_type
         self.bparams.r = bond_r
 
+        # default setting for bonds related to average distance of initial mesh
         ###############################################
         # !! MEMBRANE LENGTHSCALES ARE SET HERE  !!   #
-        ###############################################
-
+       ################################################
         if (lc1 is None) and (lc0 is None) and self.initialize:
             a, l = m.avg_tri_props(self.mesh.trimesh)
-            self.bparams.lc0 = np.sqrt(3) #1.25*l#1.5 #np.sqrt(3) #MMB CHANGED ----> VALUES SET AS IN THE MC CODE; careful scaling with the membrane, l is not always what is expected!
-            self.bparams.lc1 = 1.0        #0.75*l #1.0 #MMB CHANGED ----> VERY IMPORTANT THIS IS AT LEAST 1 TO AVOID STRANGE CURVATURES
+            self.bparams.lc0 = 1.25 * l
+            self.bparams.lc1 = 0.75 * l
             self.bparams.a0 = a
         else:
-            a, l = m.avg_tri_props(self.mesh.trimesh)
             self.bparams.lc0 = lc0
             self.bparams.lc1 = lc1
-            self.bparams.a0  = a
+            self.bparams.a0  = a0
+
+
+        print(f'l0={self.bparams.lc0/1.25}\nlc1={self.bparams.lc1}\nlc0={self.bparams.lc0}\n')
+
 
         #################################
         #      SURFACE REPULSION        #
         #################################
-        #      dealt with by LAMMPS     #
+        #      handeled by LAMMPS       #
         #################################
 
         self.rparams = m.SurfaceRepulsionParams()
-
         # neighbour lists of TRIMEM are not used but kept here in case needed
         self.rparams.n_search = n_search
         self.rparams.rlist = rlist
+        #
 
         #currently default 2 is fixed, not yet implemented to change TODO
         self.rparams.exclusion_level = exclusion_level
 
         if rep_lc1==None:
             #by default set to average distance used for scaling tether potential
-            self.rparams.lc1 = 1.0 #self.bparams.lc1/0.75 #1.0 #MMB CHANGED TO SET THE SAME AS REPULSION FOR THE TETHERING (old --> 0.75*l)
+            self.rparams.lc1 = self.bparams.lc1/0.75 #rep_lc1
         else:
             self.rparams.lc1=rep_lc1
-
+        #self.rparams.lc1 = l*0.001
         self.rparams.r = rep_r
 
+        print(f'l0={self.bparams.lc0 / 1.25}\nlc1={self.bparams.lc1}\nlc0={self.bparams.lc0}\nr_lc0={self.rparams.lc1}\n')
         ###############################
         #  PARAMETER CONTINUATION     #
         ###############################
         # translate energy params
         # see trimem doc for details
         ###############################
-
         self.cp = m.ContinuationParams()
         self.cp.delta = delta
         self.cp.lam = lam
@@ -618,7 +485,6 @@ class TriLmp():
         # These parameters will also be used to reinitialize LAMMPS, i.e #
         # in pickling for the checkpoints                                #
         ##################################################################
-
         self.eparams = m.EnergyParams()
         self.eparams.kappa_b = kappa_b
         self.eparams.kappa_a = kappa_a
@@ -636,12 +502,10 @@ class TriLmp():
        ###############################
        #   ALGORITHMIC PARAMETERS    #
        ###############################
-
         self.algo_params=AlgoParams(num_steps,reinitialize_every,init_step,step_size,traj_steps,
                  momentum_variance,flip_ratio,flip_type,initial_temperature,
                  cooling_factor,start_cooling,maxiter,refresh,thermal_velocities,
                 langevin_thermostat,
-                brownian_dynamics,
                 langevin_damp,
                 langevin_seed,
                 pure_MD,
@@ -651,7 +515,6 @@ class TriLmp():
        ###############################
        #     OUTPUT PARAMETERS       #
        ###############################
-
         self.output_params=OutputParams(info,
                  thin,
                  out_every,
@@ -660,20 +523,17 @@ class TriLmp():
                  restart_prefix,
                  checkpoint_every,
                  output_format,
-                 output_flag,
-                 output_counter,
-                 performance_increment,
-                 energy_increment)
+                output_flag,
+                output_counter,
+                performance_increment,
+                energy_increment)
 
         ####################################################
         #     ENERGY MANAGER INITIALISATION - TRIMEM       #
         ####################################################
-
         if self.initialize:
-
             # setup energy manager with initial mesh
             self.estore = m.EnergyManagerNSR(self.mesh.trimesh, self.eparams)
-
             #safe initial states property
             self.initial_state=InitialState(self.estore.initial_props.area,
                                             self.estore.initial_props.volume,
@@ -684,11 +544,7 @@ class TriLmp():
 
             self.initialize=False
 
-            # MMB checked - The initial bending energy is always correct
-            # print("INITIAL BENDING: ", self.estore.initial_props.bending)
-
         else:
-
             # reinitialize using saved initial state properties (for reference potential V, A, dA)
             self.initial_state = InitialState(area,
                                               volume,
@@ -705,17 +561,14 @@ class TriLmp():
 
             #recreate energy manager
             self.estore = m.EnergyManagerNSR(self.mesh.trimesh, self.eparams, self.init_props)
+       # save general lengthscale, i.e. membrane bead "size" defined by tether repulsion onset
+        self.l0 = self.estore.eparams.bond_params.lc1 / 0.75
 
-        # save general lengthscale, i.e. membrane bead "size" defined by tether repulsion onset
-        self.l0 = 1.0 #self.estore.eparams.bond_params.lc1/0.75 #1.0 # MMB HARDCODED: LENGTH SCALE OF SYSTEM IS ALWAYS SIGMA = 1
-
-        ########################################
-        #         MASSES OF PARTICLES          #
-        ########################################
-
-        # set Mass Vector (all particle masses - by default 1)
+    ########################################
+    #         MASSES OF PARTICLES          #
+    ########################################
+    # set Mass Vector (vector of all masses (vertices + beads)
         self.masses = []
-
         for i in range(self.n_vertices):
             self.masses.append(self.algo_params.momentum_variance)
 
@@ -726,25 +579,14 @@ class TriLmp():
             else:
                 for i in range(self.beads.n_beads):
                     self.masses.append(self.beads.masses)
-
-        # S-layer masses are hard-coded to 1
-        if self.slayer:
-            for i in range(self.n_slayer):
-                self.masses.append(self.algo_params.momentum_variance)
-
-        # Rigid symbiont particle masses are hard-coded to 1
-        if self.fix_rigid_symbiont:
-            for i in range(self.fix_rigid_symbiont_nparticles):
-                self.masses.append(self.algo_params.momentum_variance)
-
-        # final vector -- not sure what is the point of this here
-        # because then in the set up configuration we define it otherwise
         self.masses=np.asarray(self.masses)
 
 
-        ##############################################################
-        #                     LAMMPS SETUP                           #
-        ##############################################################
+
+    ##############################################################
+    #                     LAMMPS SETUP                           #
+    ##############################################################
+
 
         # create internal lammps instance
         self.lmp = lammps(cmdargs=['-sf','omp'])
@@ -753,7 +595,7 @@ class TriLmp():
         ###########################################
         #            Optional Tethers             #
         ###########################################
-
+        #default
         bond_text="""
                     special_bonds lj/coul 0.0 0.0 0.0
                     bond_style zero nocoeff
@@ -761,31 +603,19 @@ class TriLmp():
         n_bond_types=1
         n_tethers=0
         add_tether=False
-
         #added tethers
         if self.beads.bead_interaction=='tether':
             add_tether=True
             n_tethers=self.beads.n_beads
-            n_bond_types+=1
+            n_bond_types=2
             bond_text=f"""
             special_bonds lj/coul 0.0 0.0 0.0
             bond_style hybrid zero harmonic
             bond_coeff 1 zero 0.0
             bond_coeff 2 harmonic {self.beads.bead_interaction_params[0]} {self.beads.bead_interaction_params[1]}
             special_bonds lj/coul 0.0 0.0 0.0
-
+            
             """
-
-        if self.slayer:
-            n_bond_types+=1
-            bond_text=f"""
-                        special_bonds lj/coul 0.0 0.0 0.0
-                        bond_style hybrid zero nocoeff harmonic
-                        bond_coeff 1 zero 0.0
-                        bond_coeff 2 harmonic {self.slayer_kbond} {self.slayer_rlbond}
-                        dihedral_style harmonic
-                        dihedral_coeff 1 {self.slayer_kdihedral} 1 1
-                    """
 
         ############################################################
         #        MAIN INPUT SCRIPT USED IN LAMMPS                  #
@@ -798,107 +628,49 @@ class TriLmp():
         #  TRIMEM are critically reliant on the the setting:       #
         # " atom_modify sort 0 0.0 "                               #
         ############################################################
-
-        atom_style_text = "hybrid bond charge"
-        bond_dihedral_text = f"bond/types {n_bond_types}"
-        total_particle_types = 1+self.beads.n_types
-
-        # modifications to code if s-layer exists
-        if self.slayer:
-            atom_style_text = "full" # molecular + charge
-            total_particle_types+=1
-            bond_dihedral_text+=" dihedral/types 1"
-            bond_dihedral_text+=" extra/dihedral/per/atom 14"
-
-        # default 'basic system' description
         basic_system = dedent(f"""\
             units lj
             dimension 3
             package omp 0
-
-            atom_style    {atom_style_text}
+            
+            atom_style	hybrid bond charge 
             atom_modify sort 0 0.0
+            
 
             region box block {self.algo_params.box[0]} {self.algo_params.box[1]} {self.algo_params.box[2]} {self.algo_params.box[3]} {self.algo_params.box[4]} {self.algo_params.box[5]}
-            create_box {total_particle_types} box {bond_dihedral_text} extra/bond/per/atom 14 extra/special/per/atom 14
-
+            create_box {1+self.beads.n_types} box bond/types {n_bond_types} extra/bond/per/atom 14 extra/special/per/atom 14
+                
             run_style verlet
-            fix 1 all nve
+            fix 1 all  nve
             fix ext all external pf/callback 1 1
-
+            
             timestep {self.algo_params.step_size}
 
-            {block(bond_text)}
-
+            {block(bond_text)}            
+            
             dielectric  1.0
             compute th_ke all ke
             compute th_pe all pe pair bond
-
-            thermo {self.algo_params.traj_steps}
+            
+            thermo {self.algo_params.traj_steps}                                        
             thermo_style custom c_th_pe c_th_ke
             thermo_modify norm no
-
+            
             info styles compute out log
 
             echo log
             log none
-
+            
         """)
-
-        # Rigid symbiont OR fix gcmc OR fix bond_react --->
-        #   Require removing 'fix 1 all nve'
-        #   It is introduced afterwards
-        if self.fix_rigid_symbiont or self.fix_gcmc or fix_bond_react:
-
-            # MMB: make sure self.beads.n_types is 0
-            total_particle_types +=1
-
-            if fix_bond_react:
-                # In total three particle types:
-                # (1) Membrane beads
-                # (2) Metabolites
-                # (3) Waste particles
-                total_particle_types +=1
-
-            basic_system = dedent(f"""\
-                units lj
-                dimension 3
-                package omp 0
-
-                atom_style    {atom_style_text}
-                atom_modify sort 0 0.0
-
-                region box block {self.algo_params.box[0]} {self.algo_params.box[1]} {self.algo_params.box[2]} {self.algo_params.box[3]} {self.algo_params.box[4]} {self.algo_params.box[5]}
-                create_box {total_particle_types} box {bond_dihedral_text} extra/bond/per/atom 14 extra/special/per/atom 14
-
-                run_style verlet
-                fix ext all external pf/callback 1 1
-
-                timestep {self.algo_params.step_size}
-
-                {block(bond_text)}
-
-                dielectric  1.0
-                compute th_ke all ke
-                compute th_pe all pe pair bond
-
-                thermo {self.algo_params.traj_steps}
-                thermo_style custom c_th_pe c_th_ke
-                thermo_modify norm no
-
-                info styles compute out log
-
-                echo log
-                log none
-
-            """)
 
         # initialize lammps
         self.lmp.commands_string(basic_system)
 
-        # -------------------------------------
-        # VERTICES + TOPOLOGY + BEADS + TETHERS
-        # -------------------------------------
+
+        
+
+
+        # VERTICES + TOPOLOGY + BEADS + TETHERS    
 
         # extract bond topology from Trimesh object
         self.edges = trimesh.Trimesh(vertices=self.mesh.x, faces=self.mesh.f).edges_unique
@@ -908,21 +680,21 @@ class TriLmp():
         with open('sim_setup.in', 'w') as f:
             f.write('\n\n')
 
-            #------------------------------------
-            # HEADER INPUT FILE
-            # -----------------------------------
+            f.write(f'{self.mesh.x.shape[0]+self.beads.n_beads} atoms\n')
+            f.write(f'{self.edges.shape[0]+n_tethers} bonds\n\n')
 
-            f.write(f'{self.mesh.x.shape[0]+self.beads.n_beads+self.n_slayer+self.fix_rigid_symbiont_nparticles} atoms\n')
-            f.write(f'{total_particle_types} atom types\n')
-            f.write(f'{self.edges.shape[0]+n_tethers+self.n_slayer_bonds} bonds\n')
-            f.write(f'{n_bond_types} bond types\n\n')
+            f.write(f'{1+self.beads.n_types} atom types\n')
+            if add_tether:
+                f.write(f'2 bond types\n\n')
+            else:
+                f.write(f'1 bond types\n\n')
 
-            # include dihedrals for s-layer
-            if self.slayer:
-                f.write(f'{self.n_slayer_dihedrals} dihedrals\n')
-                f.write(f'1 dihedral types\n\n')
+          #  f.write('Bond Coeffs\n\n')
+          #  f.write(f'1 zero nocoeff\n')
+          #  if add_tether:
+          #      f.write(f'2 harmonic {self.beads.bead_interaction_params[0]} {self.beads.bead_interaction_params[1]}\n')
 
-            # MASSES
+
             f.write('Masses\n\n')
             f.write(f'1 {self.algo_params.momentum_variance}\n')
             if self.beads.n_beads:
@@ -933,77 +705,25 @@ class TriLmp():
                     else:
                         f.write(f'{i + 2} {self.beads.masses}\n')
 
-            # ---- MASSES S-LAYER
-            if self.slayer:
-                f.write(f'{self.beads.n_types+1+1} {self.algo_params.momentum_variance}\n')
 
-            # ---- MASSES RIGID SYMBIONT: HARDCODED THAT RIGID SYMBIONT CONSISTS OF PARTICLE TYPE 2
-            if self.fix_rigid_symbiont:
-                f.write(f'2 {self.algo_params.momentum_variance}\n')
+            f.write(f'Atoms # hybrid\n\n')
+            for i in range(self.n_vertices):
+                f.write(f'{i + 1} 1  {self.mesh.x[i, 0]} {self.mesh.x[i, 1]} {self.mesh.x[i, 2]} 1 1.0 \n')
 
-            # ---- MASSES METABOLITES HARDCODED THAT METABOLITES CONSIST OF PARTICLE TYPE 2 AND HAVE MASS 1
-            if self.fix_gcmc:
-                f.write(f'2 {self.algo_params.momentum_variance}\n')
-
-            # ---- MASSES WASTE PARTICLES (WHEN METABOLITES CHANGE TYPE BEFORE BEING CONSUMED - HARD CODED TYPE 3 AND MASS 1)
-            if self.fix_bond_react:
-                f.write(f'3 {self.algo_params.momentum_variance}\n')
-
-            f.write('\n')
-
-            #------------------------------------
-            # ATOMS
-            # -----------------------------------
-
-            if self.slayer:
-                f.write(f'Atoms # full\n\n')
-
-                for i in range(self.n_vertices):
-                    f.write(f'{i + 1} 1 1 1.0 {self.mesh.x[i, 0]} {self.mesh.x[i, 1]} {self.mesh.x[i, 2]} \n')
-
-                # SLAYER HARDCODING -- MMB FOR THE MOMENT IT IS NOT POSSIBLE TO HAVE BEADS AT THE SAME TIME AS THE VERTICES
-                for i in range(self.n_slayer):
-                    f.write(f'{self.n_vertices+i+1} 2 2 1.0 {self.slayer_points[i, 0]} {self.slayer_points[i, 1]} {self.slayer_points[i, 2]}\n')
-
-            else:
-
-                if not self.fix_rigid_symbiont:
-                    f.write(f'Atoms # hybrid\n\n')
-                    for i in range(self.n_vertices):
-                        f.write(f'{i + 1} 1  {self.mesh.x[i, 0]} {self.mesh.x[i, 1]} {self.mesh.x[i, 2]} 1 1.0 \n')
-
-                    if self.beads.n_beads:
-                        if self.beads.n_types>1:
-                            for i in range(self.beads.n_beads):
-                                f.write(f'{self.n_vertices+1+i} {self.beads.types[i]} {self.beads.positions[i,0]} {self.beads.positions[i,1]} {self.beads.positions[i,2]} 1 1.0\n')
-                        else:
-                            for i in range(self.beads.n_beads):
-                                f.write(f'{self.n_vertices+1+i} 2 {self.beads.positions[i,0]} {self.beads.positions[i,1]} {self.beads.positions[i,2]} 1 1.0\n')
+            if self.beads.n_beads:
+                if self.beads.n_types>1:
+                    for i in range(self.beads.n_beads):
+                        f.write(f'{self.n_vertices+1+i} {self.beads.types[i]} {self.beads.positions[i,0]} {self.beads.positions[i,1]} {self.beads.positions[i,2]} 1 1.0\n')
                 else:
+                    for i in range(self.beads.n_beads):
+                        f.write(f'{self.n_vertices+1+i} 2 {self.beads.positions[i,0]} {self.beads.positions[i,1]} {self.beads.positions[i,2]} 1 1.0\n')
 
-                    f.write(f'Atoms # hybrid\n\n')
-                    # membrane particles are type 1
-                    for i in range(self.n_vertices):
-                        f.write(f'{i + 1} 1  {self.mesh.x[i, 0]} {self.mesh.x[i, 1]} {self.mesh.x[i, 2]} 1 1.0 \n')
-                    # symbiont particles are type 2
-                    for i in range(self.fix_rigid_symbiont_nparticles):
-                        f.write(f'{self.n_vertices + i + 1} 2  {self.fix_rigid_symbiont_coordinates[i, 0]} {self.fix_rigid_symbiont_coordinates[i, 1]} {self.fix_rigid_symbiont_coordinates[i, 2]} 1 1.0 \n')
 
-            #------------------------------------
-            # BONDS
-            # -----------------------------------
-            if self.slayer == False:
-                f.write(f'Bonds # zero special\n\n')
-            else:
-                f.write(f'Bonds # hybrid\n\n')
+            # f.write(f'{self.mesh.x.shape[0]+1} {self.mesh.x[0,0]} {self.mesh.x[0,1]} {self.mesh.x[0,2]} 1 2\n')
+            f.write(f'Bonds # zero special\n\n')
 
-            # first type of bond -- for the fluid membrane
             for i in range(self.edges.shape[0]):
                 f.write(f'{i + 1} 1 {self.edges[i, 0] + 1} {self.edges[i, 1] + 1}\n')
-
-            # second type of bond -- for the slayer
-            for i in range(self.n_slayer_bonds):
-                f.write(f'{self.edges.shape[0] + i + 1} 2 {self.slayer_bonds[i, 0] + self.n_vertices} {self.slayer_bonds[i, 1] + self.n_vertices}\n')
 
             if add_tether:
                 for i in range(n_tethers):
@@ -1015,284 +735,54 @@ class TriLmp():
                             d_temp=d_temp2
                             h=j
 
+
                     f.write(f'{self.edges.shape[0]+1+i} 2 {h+1} {self.n_vertices+1+i}\n')
 
-            #------------------------------------
-            # DIHEDRALS (ONLY APPLICABLE S-LAYER)
-            # -----------------------------------
 
-            if self.slayer:
-                f.write(f'Dihedrals # harmonic\n\n')
-                for i in range(self.n_slayer_dihedrals):
-                    f.write(f'{i + 1} 1 {self.slayer_dihedrals[i, 0] +self.n_vertices} {self.slayer_dihedrals[i, 1]  +self.n_vertices} {self.slayer_dihedrals[i, 2]  +self.n_vertices} {self.slayer_dihedrals[i, 3]  +self.n_vertices}\n')
-
-        #------------------------------------
-        # ADD PAIR INTERACTIONS
-        # -----------------------------------
         self.lmp.commands_string(self.pair_cmds())
 
-        if not self.fix_gcmc:
-            self.lmp.commands_string(f"neigh_modify every {self.check_neigh_every} check yes") # MMB CHANGED FROM DEFAULT VALUES (ROOM FOR OPTIMIZATION)
+        if self.beads.n_beads:
+            self.lmp.commands_string("neigh_modify one 5000 page 50000 every 100 check yes")
 
-        # -----------------------------------
         # initialize LAMMPS
-        # -----------------------------------
         self.lmp.command('read_data sim_setup.in add merge')
 
-        # -----------------------------------
-        # THERMOSTAT/VELOCITIES SETTINGS
-        # -----------------------------------
-        self.atom_props = f"""
-                        velocity vertices create {self.algo_params.initial_temperature} 1298371 mom yes dist gaussian
+
+        # THERMOSTAT/VELOCITIES SETTINGS            #
+        self.atom_props = f"""     
+                        velocity vertices create {self.algo_params.initial_temperature} 1298371 mom yes dist gaussian 
                         """
 
-        # ----------------------------------
-        # GROUPING OF THE TYPES
-        # Please note that the code assumes
-        # the options below are mutually
-        # exclusive. This needs changing, or
-        # else, raising errors
-        # ----------------------------------
+        #group together different types
         self.lmp.command('group vertices type 1')
-
         for i in range(self.beads.n_types):
             self.lmp.command(f'group beads_{i+2} type {i+2}')
 
-        if self.slayer:
-            self.lmp.command(f'group slayer type {self.beads.n_types+1}')
-
-        if fix_drag:
-            self.lmp.commands_string(f"group draggedpart id {fix_drag_id}")
-
-        if self.fix_rigid_symbiont:
-            self.lmp.command('group symbiont type 2')
-
-        if self.fix_gcmc:
-            self.lmp.command('group metabolites type 2')
-
-        # ------------------------------------#
-        #           FIX BOND REACT            #
-        # ------------------------------------#
-
-        if self.fix_bond_react:
-            # define the molecules
-            for r in range(self.fix_bond_react_reactions):
-
-                # pre molecule template
-                self.lmp.command(f'molecule mpre{r} {self.fix_bond_react_reactions_parameters[r][0]}')
-
-                # post molecule template
-                self.lmp.command(f'molecule mpost{r} {self.fix_bond_react_reactions_parameters[r][1]}')
-
-                # variables for the reaction
-                self.lmp.command(f'variable NeveryR{r} equal {self.fix_bond_react_reactions_parameters[r][2]}')
-                self.lmp.command(f'variable RminR{r} equal {self.fix_bond_react_reactions_parameters[r][3]}')
-                self.lmp.command(f'variable RmaxR{r} equal {self.fix_bond_react_reactions_parameters[r][4]}')
-                self.lmp.command(f'variable ReactProbR{r} equal {self.fix_bond_react_reactions_parameters[r][5]}')
-                self.lmp.command(f'variable seedR{r} equal {self.fix_bond_react_reactions_parameters[r][6]}')
-
-
-            # introduce the fix
-            fix_bond_react_command = "fix freact all bond/react stabilization yes AllAtoms 0.1 reset_mol_ids no "
-
-            for r in range(self.fix_bond_react_reactions):
-                fix_bond_react_command += f" react R{r}reaction all v_NeveryR{r} v_RminR{r} v_RmaxR{r} mpre{r} mpost{r} {self.fix_bond_react_reactions_parameters[r][7]} prob v_ReactProbR{r} {self.fix_bond_react_reactions_parameters[r][6]} "
-
-            self.lmp.command(fix_bond_react_command)
-
-        # -----------------------------------------------------
-        # DEFINE GCMC REGION (where particles will be created)
-        # -----------------------------------------------------
-
-        if self.fix_gcmc:
-            num_regions = self.fix_gcmc_num_regions
-
-            if num_regions==1:
-                nn=0
-                if self.fix_gcmc_region_type=="block":
-                    if len(self.fix_gcmc_region_parameters)!=6:
-                        print("ERROR: Incorrect number of parameters to define block region")
-                        exit(1)
-
-                    xlo = self.fix_gcmc_region_parameters[0]
-                    xhi = self.fix_gcmc_region_parameters[1]
-                    ylo = self.fix_gcmc_region_parameters[2]
-                    yhi = self.fix_gcmc_region_parameters[3]
-                    zlo = self.fix_gcmc_region_parameters[4]
-                    zhi = self.fix_gcmc_region_parameters[5]
-
-                    # INCLUDING THE CORRESPONDING REGION
-                    self.lmp.commands_string(f"region gcmc_region_{nn} block {xlo} {xhi} {ylo} {yhi} {zlo} {zhi} side in")
-                if self.fix_gcmc_region_type=="intersection":
-                    if len(self.fix_gcmc_region_parameters[nn])!=2:
-                        print("ERROR: Incorrect number of parameters to define intersection region")
-                        exit(1)
-
-                    # OUTER SHAPE
-                    xlo_outer=self.fix_gcmc_region_parameters[0][0]
-                    xhi_outer=self.fix_gcmc_region_parameters[0][1]
-                    ylo_outer=self.fix_gcmc_region_parameters[0][2]
-                    yhi_outer=self.fix_gcmc_region_parameters[0][3]
-                    zlo_outer=self.fix_gcmc_region_parameters[0][4]
-                    zhi_outer=self.fix_gcmc_region_parameters[0][5]
-
-                    # INNER SHAPE
-                    xlo_inner=self.fix_gcmc_region_parameters[1][0]
-                    xhi_inner=self.fix_gcmc_region_parameters[1][1]
-                    ylo_inner=self.fix_gcmc_region_parameters[1][2]
-                    yhi_inner=self.fix_gcmc_region_parameters[1][3]
-                    zlo_inner=self.fix_gcmc_region_parameters[1][4]
-                    zhi_inner=self.fix_gcmc_region_parameters[1][5]
-
-                    self.lmp.commands_string(f"region outer_region block {xlo_outer} {xhi_outer} {ylo_outer} {yhi_outer} {zlo_outer} {zhi_outer} side in")
-                    self.lmp.commands_string(f"region inner_region block {xlo_inner} {xhi_inner} {ylo_inner} {yhi_inner} {zlo_inner} {zhi_inner} side out")
-                    self.lmp.commands_string(f"region gcmc_region_{nn} intersect 2 outer_region inner_region")
-            elif num_regions>1:
-                for nn in range(num_regions):
-                    if self.fix_gcmc_region_type[nn]=="block":
-                        if len(self.fix_gcmc_region_parameters[nn])!=6:
-                            print("ERROR: Incorrect number of parameters to define block region")
-                            exit(1)
-
-                        xlo = self.fix_gcmc_region_parameters[nn][0]
-                        xhi = self.fix_gcmc_region_parameters[nn][1]
-                        ylo = self.fix_gcmc_region_parameters[nn][2]
-                        yhi = self.fix_gcmc_region_parameters[nn][3]
-                        zlo = self.fix_gcmc_region_parameters[nn][4]
-                        zhi = self.fix_gcmc_region_parameters[nn][5]
-
-                        # INCLUDING THE CORRESPONDING REGION
-                        self.lmp.commands_string(f"region gcmc_region_{nn} block {xlo} {xhi} {ylo} {yhi} {zlo} {zhi} side in")
-                    if self.fix_gcmc_region_type[nn]=="intersection":
-                        if len(self.fix_gcmc_region_parameters[nn])!=2:
-                            print("ERROR: Incorrect number of parameters to define intersection region")
-                            exit(1)
-
-                        # OUTER SHAPE
-                        xlo_outer=self.fix_gcmc_region_parameters[nn][0][0]
-                        xhi_outer=self.fix_gcmc_region_parameters[nn][0][1]
-                        ylo_outer=self.fix_gcmc_region_parameters[nn][0][2]
-                        yhi_outer=self.fix_gcmc_region_parameters[nn][0][3]
-                        zlo_outer=self.fix_gcmc_region_parameters[nn][0][4]
-                        zhi_outer=self.fix_gcmc_region_parameters[nn][0][5]
-
-                        # INNER SHAPE
-                        xlo_inner=self.fix_gcmc_region_parameters[nn][1][0]
-                        xhi_inner=self.fix_gcmc_region_parameters[nn][1][1]
-                        ylo_inner=self.fix_gcmc_region_parameters[nn][1][2]
-                        yhi_inner=self.fix_gcmc_region_parameters[nn][1][3]
-                        zlo_inner=self.fix_gcmc_region_parameters[nn][1][4]
-                        zhi_inner=self.fix_gcmc_region_parameters[nn][1][5]
-
-                        self.lmp.commands_string(f"region outer_region block {xlo_outer} {xhi_outer} {ylo_outer} {yhi_outer} {zlo_outer} {zhi_outer} side in")
-                        self.lmp.commands_string(f"region inner_region block {xlo_inner} {xhi_inner} {ylo_inner} {yhi_inner} {zlo_inner} {zhi_inner} side out")
-                        self.lmp.commands_string(f"region gcmc_region_{nn} intersect 2 outer_region inner_region")
-
-        # ------------------------------------
-        # LANGEVIN THERMOSTAT
-        # Langevin thermostat for all beads
-        # scaling each particle type according
-        # to it's size and mass (M/sigma)
-        #
-        # This whole section should be cleaned
-        # to avoid redundancies and potential bugs
-        # ------------------------------------
-
+        # Langevin thermostat for all beads scaling each particle type according to it's size and mass (M/sigma)
         if self.algo_params.langevin_thermostat:
-
             sc0=self.algo_params.momentum_variance/self.l0
-
-            self.bds_info_lgv = ''
-
+            bds = ''
             if self.beads.n_types:
                 if self.beads.n_types>1:
-                    self.bds_info_lgv = ''
+                    bds = ''
                     for i in range(self.beads.n_types):
-                        self.bds_info_lgv += f'scale {i + 2} {(self.beads.masses[i] / self.beads.bead_sizes[i])/sc0} '
+                        bds += f'scale {i + 2} {(self.beads.masses[i] / self.beads.bead_sizes[i])/sc0} '
                 else:
-                    self.bds_info_lgv=f'scale 2 {(self.beads.masses / self.beads.bead_sizes)/sc0} '
+                    bds=f'scale 2 {(self.beads.masses / self.beads.bead_sizes)/sc0} '
 
-            # FIX GCMC (scale the impact of the thermostat on the metabolites - beads masses is by default 1)
-            if self.fix_gcmc:
-                self.bds_info_lgv+= f'scale 2 {(self.beads.masses / self.fix_gcmc_interaction_parameters[0])/sc0}'
-
-            # --------------------------- NOT RIGID SYMBIONT
-            if self.fix_rigid_symbiont == False:
-
-                if not self.equilibrated:
-
-                    # --- BROWNIAN DYNAMICS
-                    #if self.algo_params.brownian_dynamics:
-                    #    lv_thermo_comm=f"""
-                    #            fix bdt vertices brownian {self.algo_params.initial_temperature} {self.algo_params.langevin_seed} rng uniform gamma_t {self.algo_params.langevin_damp}
-                    #            """
-
-                    # --- LANGEVIN DYNAMICS
-                    #if not self.algo_params.brownian_dynamics:
-
-                    lv_thermo_comm=f"""
-                                    fix lvt vertices langevin {self.algo_params.initial_temperature} {self.algo_params.initial_temperature}  {self.algo_params.langevin_damp} {self.algo_params.langevin_seed} zero yes
-                                    """
-
-                    if self.fix_gcmc:
-                        # necessary to include the nve because we have removed it
-                        lv_thermo_comm=f"""
-                            fix vertexnve vertices nve
-                            fix lvt vertices langevin {self.algo_params.initial_temperature} {self.algo_params.initial_temperature}  {self.algo_params.langevin_damp} {self.algo_params.langevin_seed} zero yes tally yes
-                                    """
-                    if self.fix_bond_react:
-                        # necessary to consider the _REACT underscore
-                        lv_thermo_comm=f"""
-                            fix LGVThermostat all langevin {self.algo_params.initial_temperature} {self.algo_params.initial_temperature} {self.algo_params.langevin_damp} {self.algo_params.langevin_seed} zero yes tally yes
-                            fix NVEIntegrator AllAtoms_REACT nve
-                                    """
-                else:
-
-                    print("This part of the code has to be improved. Therefore, better not to use it. The program will kick you out if you try to access this.")
-                    exit(1)
-
-                    # --- BROWNIAN DYNAMICS (at the moment only moving the vertices)
-                    if self.algo_params.brownian_dynamics:
-                        self.extended_seed = self.algo_params.langevin_seed*11+23
-                        lv_thermo_comm=f"""
-                                fix bdtv vertices brownian {self.algo_params.initial_temperature} {self.algo_params.langevin_seed} rng uniform gamma_t {self.algo_params.langevin_damp}
-                                fix bdtv beads_2 brownian {self.algo_params.initial_temperature} {self.extended_seed} rng uniform gamma_t {self.beads.bead_sizes*self.algo_params.langevin_damp}
-                                """
-
-                    # --- LANGEVIN DYNAMICS
-                    if not self.algo_params.brownian_dynamics and not self.fix_gcmc:
-                        lv_thermo_comm=f"""
-                                fix lvt all langevin {self.algo_params.initial_temperature} {self.algo_params.initial_temperature}  {self.algo_params.langevin_damp} {self.algo_params.langevin_seed} zero yes {self.bds_info_lgv}
-                                """
-
-            # --------------------------- MMB: RIGID SYMBIONT
-            else:
-
-                if not self.equilibrated:
-
-                    if not self.algo_params.brownian_dynamics:
-                        lv_thermo_comm=f"""
-                                fix vertexlgv vertices langevin {self.algo_params.initial_temperature} {self.algo_params.initial_temperature}  {self.algo_params.langevin_damp} {self.algo_params.langevin_seed}
-                                """
-                else:
-
-                    if not self.algo_params.brownian_dynamics:
-
-                        lv_thermo_comm=f"""
-                                fix vertexnve vertices nve
-                                fix vertexlgv vertices langevin {self.algo_params.initial_temperature} {self.algo_params.initial_temperature} {self.algo_params.langevin_damp} {self.algo_params.langevin_seed}
-                                fix symbiontnve symbiont rigid/nve single langevin {self.algo_params.initial_temperature} {self.algo_params.initial_temperature} {self.algo_params.langevin_damp} {self.algo_params.langevin_seed+23}
-                                """
+            lv_thermo_comm=f"""
+                            fix lvt all langevin {self.algo_params.initial_temperature} {self.algo_params.initial_temperature}  {self.algo_params.langevin_damp} {self.algo_params.langevin_seed} zero yes {bds}
+                            
+                            """
             self.lmp.commands_string(lv_thermo_comm)
 
-            if fix_drag:
-                self.lmp.commands_string(f"fix genprot draggedpart drag {fix_drag_coord[0]} {fix_drag_coord[1]} {fix_drag_coord[2]} {fix_drag_fmag} 0.5")
 
         # initialize random velocities if thermal velocities is chosen or set to 0
         if self.algo_params.thermal_velocities:
             self.lmp.commands_string(self.atom_props)
         else:
             self.lmp.command('velocity all zero linear')
+
 
         # setting or reinitializing bead velocities
         if np.any(self.beads.velocities):
@@ -1303,17 +793,17 @@ class TriLmp():
         if np.any(self.mesh_velocity):
             for i in range(self.n_vertices):
                 self.L.atoms[i].velocity=self.mesh_velocity[i,:]
-
-        # ---------------------------------
-        # INTERACTIONS  and TRIMEM callback -- BETTER NOT TO TOUCH!
-        # ---------------------------------
-
+        
+        # INTERACTIONS  and TRIMEM callback
+        
         # set callback for helfrich gradient to be handed from TRIMEM to LAMMPS via fix external "ext"
         self.lmp.set_fix_external_callback("ext", self.callback_one, self.lmp)
 
         if self.algo_params.additional_command:
             self.lmp.commands_string(self.algo_params.additional_command)
 
+
+        # set temperature TODO: no implementation of the simulated annealing for MD mode yet
         # Temperature in LAMMPS set to fixed initial temperature
         self.T = self.algo_params.initial_temperature
 
@@ -1324,14 +814,13 @@ class TriLmp():
         self.he=self.estore.energy(self.mesh.trimesh)#+0.5 * v.ravel().dot(v.ravel())
         self.energy_new=0.0
 
-        #setting and getting helfrich energy from/to lammps
+
+        #setting and getting helffrich energy from/to lammps
         #self.lmp.fix_external_set_energy_global("ext", self.estore.energy(self.mesh.trimesh))
         #print(self.lmp.numpy.extract_fix("ext", LMP_STYLE_GLOBAL, LMP_TYPE_SCALAR, nrow=0))
-
-        # -----------------------------------------
+        
         # BOOKKEEPING
         # Setting up counters for stats and writers
-        # -----------------------------------------
 
         # flip stats
         self.f_i = 0
@@ -1350,12 +839,12 @@ class TriLmp():
         self.process=psutil.Process()
         self.n= self.algo_params.num_steps // self.output_params.info if self.output_params.info!=0 else 0.0
 
+
         self.info_step = max(self.output_params.info, 0)
         self.out_step = max(self.output_params.thin, 0)
         self.cpt_step = max(self.output_params.checkpoint_every, 0)
         self.refresh_step = max(self.algo_params.refresh, 0)
 
-       ###############################################################################
        #####                   TRAJECTORY WRITER SETTINGS                        #####
        ###############################################################################
         if self.output_params.output_format=='xyz' or self.output_params.output_format=='vtu' or self.output_params.output_format=='xdmf':
@@ -1452,7 +941,7 @@ class TriLmp():
             self.acceptance_rate = ar
             #print("Accepted", self.f_acc)
             #print("Number of candidate edges", n_edges)
-
+            
             print("\n-- MCFlips-Step ", self.counter["flip"])
             print("----- flip-accept: ", ar)
             print("----- flip-rate:   ", self.algo_params.flip_ratio)
@@ -1485,6 +974,8 @@ class TriLmp():
     # when evaluating the gradient                                 #
     ################################################################
 
+
+
     def hmc_step(self):
         if not self.algo_params.pure_MD:
 
@@ -1500,10 +991,10 @@ class TriLmp():
             #calute energy
             #future make a flag system to avoid double calculation if lst step was also hmc step
             if self.algo_params.thermal_velocities:
-                 self.atom_props = f"""
-
-                            velocity        vertices create {self.T} {np.random.randint(1,9999999)} mom yes dist gaussian
-
+                 self.atom_props = f"""     
+                            
+                            velocity        vertices create {self.T} {np.random.randint(1,9999999)} mom yes dist gaussian   
+    
                             """
                  self.lmp.commands_string(self.atom_props)
                  v = self.lmp.numpy.extract_atom("v")
@@ -1607,6 +1098,7 @@ class TriLmp():
 
             self.counter["move"] += 1
 
+
     def hmc_info(self):
         """Print algorithmic information."""
         i_total = sum(self.counter.values())
@@ -1619,10 +1111,10 @@ class TriLmp():
             self.m_acc = 0
             self.m_i = 0
 
+    ##################
+    #      RUN!      #
     ###################################################
-    #                        RUN!                     #
-    ###################################################
-    #           COMBINED MOVE FOR SIMULATION          #
+    #       COMBINED MOVE FOR SIMULATION              #
     ###################################################
     def step_random(self):
 
@@ -1649,23 +1141,10 @@ class TriLmp():
         self.timer.timearray_new[1] += (time.time() - t_fix)
 
 
-    def run(self,N=0, fix_symbionts_near = True, fix_symbionts_frozen = False, timescale_interaction_flip = None, equilibration_gcmc=0):
-
-        """
-        Program run
-        - N : number of program steps
-        - fix_symbionts_near : place symbionts within interaction range of membrane
-        - fix_symbionts_frozen : do not move symbionts during the simulation
-
-        """
-        if timescale_interaction_flip != None:
-            value_nr = 0
-
-        # ----------------------------------
-        # DETERMINE LENGTH OF THE SIMULATION
-        # ----------------------------------
+    def run(self,N=0):
         if N==0:
             N=self.algo_params.num_steps
+
         if self.algo_params.switch_mode=='random':
             self.step = lambda: self.step_random()
             sim_steps=N
@@ -1675,201 +1154,7 @@ class TriLmp():
         else:
             raise ValueError("Wrong switchmode: {}. Use 'random' or 'alternating' ".format(self.algo_params.flip_type))
 
-        # ----------------------------------------------------------------------------------------
-        #                          INITIAL EQUILIBRATION OF CHEM GRAD
-        # ----------------------------------------------------------------------------------------
-        if self.fix_gcmc:
-
-            # start by defining gradient
-            num_regions = self.fix_gcmc_num_regions
-            if num_regions==1:
-                N       = self.fix_gcmc_fix_parameters[0]
-                X       = self.fix_gcmc_fix_parameters[1]
-                seedm   = self.fix_gcmc_fix_parameters[2]
-                Tm      = self.fix_gcmc_fix_parameters[3]
-                mu      = self.fix_gcmc_fix_parameters[4]
-                maxp    = self.fix_gcmc_fix_parameters[5]
-
-                # Note that the metabolite type is hard coded and
-                # that no MC moves are allowed for metabolites
-                typem = 2
-
-                nn = 0
-                fix_gcmc_command      = f"fix mygcmc_{nn} metabolites gcmc {N} {X} 0 {typem} {seedm} {Tm} {mu} 0 region gcmc_region_{nn} max {maxp}"
-                self.lmp.commands_string(fix_gcmc_command)
-            else:
-                for nn in range(num_regions):
-                    if len(self.fix_gcmc_fix_parameters[nn])!=6:
-                        print("Error in run(): Incorrect number of GCMC fix parameters.")
-                        exit(1)
-
-                    N       = self.fix_gcmc_fix_parameters[nn][0]
-                    X       = self.fix_gcmc_fix_parameters[nn][1]
-                    seedm   = self.fix_gcmc_fix_parameters[nn][2]
-                    Tm      = self.fix_gcmc_fix_parameters[nn][3]
-                    mu      = self.fix_gcmc_fix_parameters[nn][4]
-                    maxp    = self.fix_gcmc_fix_parameters[nn][5]
-
-                    # Note that the metabolite type is hard coded and
-                    # that no MC moves are allowed for metabolites
-                    typem = 2
-
-                    fix_gcmc_command      = f"fix mygcmc_{nn} metabolites gcmc {N} {X} 0 {typem} {seedm} {Tm} {mu} 0 region gcmc_region_{nn} max {maxp}"
-                    self.lmp.commands_string(fix_gcmc_command)
-
-            # only need to include this if we have not added fix bond react
-            # because otherwise fix bond react is in charge of moving everything
-            # has to be updated
-            if self.fix_bond_react == False:
-
-                # remove the previous fix to avoid double integration
-                self.lmp.commands_string("unfix vertexnve")
-                self.lmp.commands_string("unfix lvt")
-
-                # make metabolites
-                self.lmp.commands_string("fix mynve metabolites nve")
-                lv_thermo_comm=f"""fix lvt metabolites langevin {self.algo_params.initial_temperature} {self.algo_params.initial_temperature} {self.algo_params.langevin_damp} {self.algo_params.langevin_seed} zero no {self.bds_info_lgv} tally yes"""
-                self.lmp.commands_string(lv_thermo_comm)
-                self.lmp.commands_string(f"dump myDump metabolites custom 1000 dump.metabolites.gz id type x y z vx vy vz fx fy fz")
-                self.lmp.commands_string(f"run {equilibration_gcmc}")
-                self.lmp.commands_string(f"write_data initialization_gcmc.dat")
-                self.lmp.commands_string(f"undump myDump")
-
-            # remove previous fixes in case
-            self.lmp.commands_string("unfix mynve")
-            self.lmp.commands_string("unfix lvt")
-
-            # start moving everything
-            self.lmp.commands_string("fix mynve all nve")
-            lv_thermo_comm=f"""fix lvt all langevin {self.algo_params.initial_temperature} {self.algo_params.initial_temperature} {self.algo_params.langevin_damp} {self.algo_params.langevin_seed} zero yes {self.bds_info_lgv} tally yes"""
-            self.lmp.commands_string(lv_thermo_comm)
-
         for i in range(sim_steps):
-
-            # ------------------------------------------------------------------------------------
-            # POST-EQUILIBRATION UPDATE - ONLY WHEN WE HAVE SEVERAL EXTERNAL BEADS OR METABOLITES
-            # ------------------------------------------------------------------------------------
-            if i==self.equilibration_rounds:
-
-                self.equilibrated = True
-                self.lmp.commands_string(self.pair_cmds(i))
-
-                # .................... with beads
-                if self.beads.n_types>0 and fix_symbionts_near:
-
-                    # extract the coordinates of the membrane vertices and beads
-                    pos_alloc=self.lmp.numpy.extract_atom("x")
-                    self.mesh.x[:] = pos_alloc[:self.n_vertices]
-                    self.beads.positions[:] = pos_alloc[self.n_vertices:self.n_vertices+self.beads.n_beads]
-
-                    # place them where desired now that the interaction begins
-                    if self.beads.n_beads==1:
-                        coord_bead = self.mesh.x[0]
-                        rtemp=np.sqrt(coord_bead[0]**2 + coord_bead[1]**2 + coord_bead[2]**2)
-                        buffering=1.1
-                        sigma_tilde = 0.5*(1+self.beads.bead_sizes)
-                        x = coord_bead[0] + buffering*sigma_tilde*coord_bead[0]/rtemp
-                        y = coord_bead[1] + buffering*sigma_tilde*coord_bead[1]/rtemp
-                        z = coord_bead[2] + buffering*sigma_tilde*coord_bead[2]/rtemp
-
-                        # make sure that lammps knows about this
-                        atoms_alloc = self.L.atoms
-                        atoms_alloc[self.n_vertices].position[0] = x
-                        atoms_alloc[self.n_vertices].position[1] = y
-                        atoms_alloc[self.n_vertices].position[2] = z
-
-                    # place multiple beads symmetrically on a shell
-                    elif self.beads.n_beads>1:
-                        buffering =1.05
-                        sigma_tilde = 0.5*(1+self.beads.bead_sizes)
-                        n = self.beads.n_beads
-                        goldenRatio = (1+5**0.5)/2
-                        i = np.arange(0, n)
-                        theta = 2*np.pi*i/goldenRatio
-                        phi = np.arccos(1-2*(i+0.5)/n)
-                        r = np.sqrt(self.mesh.x[0, 0]**2 + self.mesh.x[0, 1]**2 + self.mesh.x[0, 2]**2)
-                        r += 1.1*sigma_tilde
-                        x, y, z = r*np.cos(theta)*np.sin(phi), r*np.sin(theta)*np.sin(phi), r*np.cos(phi)
-
-                        atoms_alloc = self.L.atoms
-                        for q in range(self.beads.n_beads):
-                            min_distance = 1000
-                            xx, yy, zz = x[q], y[q], z[q]
-                            for qq in range(self.n_vertices):
-                                xv = self.mesh.x[qq, 0]
-                                yv = self.mesh.x[qq, 1]
-                                zv = self.mesh.x[qq, 2]
-                                distance = np.sqrt((xv-xx)**2 + (yv-yy)**2 + (zv-zz)**2)
-                                if distance < min_distance:
-                                    min_distance = distance
-                                    index = qq
-
-                            xtemp = self.mesh.x[index, 0]
-                            ytemp = self.mesh.x[index, 1]
-                            ztemp = self.mesh.x[index, 2]
-                            rtemp = np.sqrt(xtemp**2 + ytemp**2 + ztemp**2)
-
-                            atoms_alloc[self.n_vertices+q].position[0] = xtemp + 1.05*sigma_tilde*xtemp/rtemp
-                            atoms_alloc[self.n_vertices+q].position[1] = ytemp + 1.05*sigma_tilde*ytemp/rtemp
-                            atoms_alloc[self.n_vertices+q].position[2] = ztemp + 1.05*sigma_tilde*ztemp/rtemp
-
-                # UPDATE THERMOSTAT TO START MOVING ALL NANOPARTICLES
-                if self.beads.n_types>0:
-                    #self.lmp.commands_string(self.pair_cmds(i))
-
-                    # (I think this part needs checking)
-                    # if the symbionts are actually frozen
-                    # then, I don't update their motion
-                    if fix_symbionts_frozen:
-                        self.lmp.commands_string("unfix lvt")
-                        self.lmp.commands_string("fix 1 vertices nve")
-                        lv_thermo_comm=f"""fix lvt all langevin {self.algo_params.initial_temperature} {self.algo_params.initial_temperature} {self.algo_params.langevin_damp} {self.algo_params.langevin_seed} zero yes {self.bds_info_lgv} """
-                    else:
-                        self.lmp.commands_string("unfix lvt")
-                        lv_thermo_comm=f"""fix lvt all langevin {self.algo_params.initial_temperature} {self.algo_params.initial_temperature} {self.algo_params.langevin_damp} {self.algo_params.langevin_seed} zero yes {self.bds_info_lgv}"""
-
-                    self.lmp.commands_string(lv_thermo_comm)
-
-                # UPDATE THERMOSTAT TO START MOVING RIGID SYMBIONT
-                if self.fix_rigid_symbiont and not fix_symbionts_frozen:
-                    self.lmp.commands_string(self.pair_cmds())
-                    lv_thermo_comm=f"""
-                                fix vertexlgv vertices langevin {self.algo_params.initial_temperature} {self.algo_params.initial_temperature} {self.algo_params.langevin_damp} {self.algo_params.langevin_seed}
-                                fix symbiontnve symbiont rigid/nve single langevin {self.algo_params.initial_temperature} {self.algo_params.initial_temperature} {self.algo_params.langevin_damp} {self.algo_params.langevin_seed+23}
-                                """
-                    self.lmp.commands_string(lv_thermo_comm)
-
-            # -------------------------------------------------
-            # HALT SIMULATIONS IF NANOPARTICLE NOT INTERACTING
-            # -------------------------------------------------
-
-            if self.equilibrated and self.check_outofrange:
-                if i%self.check_outofrange_freq ==0:
-                    pos_alloc=self.lmp.numpy.extract_atom("x")
-                    self.mesh.x[:] = np.array(pos_alloc[:self.n_vertices])
-                    self.beads.positions[:] = np.array(pos_alloc[self.n_vertices:self.n_vertices+self.beads.n_beads])
-                    distance_beads_nanoparticle = np.sqrt((self.mesh.x[:, 0] - self.beads.positions[0,0])**2 + (self.mesh.x[:, 1] - self.beads.positions[0,1])**2 + (self.mesh.x[:, 2] - self.beads.positions[0,2])**2)
-                    if np.all(distance_beads_nanoparticle > self.check_outofrange_cutoff):
-                        fileERROR = open("ERROR_REPORT.dat", "w")
-                        fileERROR.writelines("It seems the nanoparticle stopped interacting with the membrane.")
-                        fileERROR.close()
-                        sys.exit(0)
-
-            # -------------------------------------------------
-            # FLIP THE MAGNITUDE OF THE INTERACTION
-            # -------------------------------------------------
-            #if self.fix_time_dependent_interaction and timescale_interaction_flip != None:
-            #    if (i%timescale_interaction_flip==0):
-            #        # perform the flip in the interaction
-            #        if value_nr == 1:
-            #            value_nr = 0
-            #        elif value_nr == 0:
-            #            value_nr = 1
-            #        self.lmp.commands_string(self.pair_cmds(program_step=value_nr))
-
-            # -------------------------------------------------
-            # ACTUAL PROGRAM
-            # -------------------------------------------------
             self.step()
             self.hmc_info()
             self.callback(np.copy(self.mesh.x),self.counter)
@@ -2001,17 +1286,12 @@ class TriLmp():
         Keyword Args:
             kwargs: ignored
         """
-
         i = sum(steps.values()) #py3.10: steps.total()
-        # MMB CHANGED ---> RECORD ACCORDING TO LAMMPS PART
-        #i = steps["move"]
 
         if self.output_params.info and (i % self.output_params.info == 0):
             print("\n-- Energy-Evaluation-Step ", i)
             self.estore.print_info(self.mesh.trimesh)
-
         if self.output_params.thin and (i % self.output_params.thin == 0):
-
             self.output(i)
             #self.output.write_points_cells(self.mesh.x, self.mesh.f)
 
@@ -2026,30 +1306,22 @@ class TriLmp():
         if self.output_params.checkpoint_every and (i % self.output_params.checkpoint_every == 0):
             self.cpt_writer()
 
-        # update reference properties?
         self.estore.update_reference_properties()
+
 
         if self.output_params.energy_increment and (i % self.output_params.energy_increment==0):
 
             # MMB CHANGE -- PRINT ENERGIES
             self.ke_new=self.lmp.numpy.extract_compute("th_ke",LMP_STYLE_GLOBAL,LMP_TYPE_SCALAR)
             self.pe_new=self.lmp.numpy.extract_compute("th_pe", LMP_STYLE_GLOBAL, LMP_TYPE_SCALAR)
-
+            
             # MMB compute volume and area of the mesh
             test_mesh = trimesh.Trimesh(vertices=self.mesh.x, faces=self.mesh.f)
             mesh_volume = test_mesh.volume
             mesh_area   = test_mesh.area
-
-            if self.print_bending_energy:
-                bending_energy_temp = self.estore.properties(self.mesh.trimesh).bending
-
-                with open(f'{self.output_params.output_prefix}_system.dat','a+') as f:
-                    f.write(f'{i} {self.estore.energy(self.mesh.trimesh)} {self.ke_new} {self.pe_new} {self.acceptance_rate} {mesh_volume} {mesh_area} {bending_energy_temp}\n')
-            else:
-                with open(f'{self.output_params.output_prefix}_system.dat','a+') as f:
-                    f.write(f'{i} {self.estore.energy(self.mesh.trimesh)} {self.ke_new} {self.pe_new} {self.acceptance_rate} {mesh_volume} {mesh_area}\n')
-
-
+            with open(f'{self.output_params.output_prefix}_system.dat','a+') as f:
+                f.write(f'{i} {self.estore.energy(self.mesh.trimesh)} {self.ke_new} {self.pe_new} {self.acceptance_rate} {mesh_volume} {mesh_area}\n')
+            
         if self.output_params.info and (i % self.output_params.info == 0):
             self.timer.timestamps.append(time.time())
             if len(self.timer.timestamps) == 2:
@@ -2211,7 +1483,6 @@ class TriLmp():
 
                 self.algo_params.thermal_velocities,
                 self.algo_params.langevin_thermostat,
-                self.algo_params.brownian_dynamics,
                 self.algo_params.langevin_damp,
                 self.algo_params.langevin_seed,
                 self.algo_params.pure_MD,
@@ -2286,12 +1557,13 @@ class TriLmp():
 
         print(f'made cp:{cptfname}')
 
-    # SOME UTILITY FUNCTIONS
-    # Here we have some minor utility functions to set
-    # parameters, counters, ....
+    # SOME UTILITY FUNCTIONS                     
+    # Here we have some minor utility functions to set        
+    # parameters, counters, ....                              
 
     def extra_callback(self, timearray_loc):
         self.timer.timearray_new=timearray_loc
+
 
 
     def update_energy_manager(self):
@@ -2314,11 +1586,10 @@ class TriLmp():
     def update_output(self):
         self.output = make_output(self.output_params.output_format, self.output_params.output_prefix,
                                   self.output_params.output_counter, callback=self.update_output_counter)
-
+    
 
     # lammps
-    def pair_cmds(self, program_step = None):
-
+    def pair_cmds(self):
         def write_srp_table():
             """
             creates a python file implementing the repulsive part of the tether potential as surface repulsion readable by
@@ -2382,114 +1653,32 @@ class TriLmp():
                         f*=np.exp(r/rl)
                         f*=srp2
 
-                        return f
+                        return f    
                 """))
-
             self.lmp.commands_string(dedent(f"""\
             pair_style python {self.eparams.repulse_params.lc1}
-            pair_coeff * * trilmp_srp_pot.SRPTrimem C {'C '*self.beads.n_types} {'C '*self.slayer_flag} {'C '*self.fix_rigid_symbiont_flag} {'C '*self.fix_gcmc_flag} {'C '*self.fix_bond_react_flag}
+            pair_coeff * * trilmp_srp_pot.SRPTrimem C {'C '*self.beads.n_types}
             shell rm -f trimem_srp.table
             pair_write  1 1 2000 rsq 0.000001 {self.eparams.repulse_params.lc1} trimem_srp.table trimem_srp 1.0 1.0
-            pair_style none
+            pair_style none 
             """))
-
-        # ------------------
-        # surface repulsion
-        # ------------------
         write_srp_table()
 
+        
         pairs:list[tuple[str,float,str,str]]=[]
         overlay=False
         def add_pair(name:str,cutoff:float,args:str,modify_coeff_cmds:str):
             pairs.append((name,cutoff,args,modify_coeff_cmds))
 
+        
         assert self.eparams.repulse_params.lc1
         # todo: performance : change to table bitmap style for improved performance
         # todo: performance : change to non-table style
         add_pair("table",self.eparams.repulse_params.lc1, "linear 2000",dedent(f"""
-        pair_modify pair table special lj/coul 0.0 0.0 0.0 tail no
+        pair_modify pair table special lj/coul 0.0 0.0 0.0
         pair_coeff 1 1 table trimem_srp.table trimem_srp
         """))
-
-        # MMB ADDED TAIL NO -- CHECK IT DOES NOT DO ANYTHING IMPORTANT
-
-        # S-LAYER HARD CODED INTERACTIONS
-        if self.slayer:
-            overlay = True
-            cutoff=1.5
-            activity_1 = 4
-            activity_2 = 2
-            mobility_1 = -1
-            mobility_2 = -1
-            cutoff_nonrec = 1.5
-            scale_nonrep = 1.0
-            exponent = 7
-            sigma12 = 1.0
-
-            cmds:list[str]=[]
-            add_pair("nonreciprocal", "",f"{cutoff_nonrec} {scale_nonrep} {exponent} {sigma12}",dedent(f"""
-                        pair_coeff * * nonreciprocal 0 0 0 0 0
-                        pair_coeff 1 2 nonreciprocal {activity_1} {activity_2} {mobility_1} {mobility_2} {cutoff_nonrec}
-                    """))
-            add_pair("harmonic/cut","","",dedent(f"""\
-                        pair_coeff * * harmonic/cut 0 0
-                        pair_coeff 1 2 harmonic/cut 1000 1.0
-                    """))
-
-        # IF THE SYMBIONT IS RIGID
-        if self.fix_rigid_symbiont:
-
-            if self.fix_rigid_symbiont_interaction=='nonreciprocal':
-                overlay=True
-
-                activity_1=self.fix_rigid_symbiont_params[0]
-                mobility_1=self.fix_rigid_symbiont_params[1]
-                activity_2=self.fix_rigid_symbiont_params[2]
-                mobility_2=self.fix_rigid_symbiont_params[3]
-                exponent  =self.fix_rigid_symbiont_params[4]
-                scale     =self.fix_rigid_symbiont_params[5]
-                beads_symbiont=self.fix_rigid_symbiont_params[6]
-
-                # soft-core (harmonic) repulsion -- HARDCODED: membrane beads have size 1
-                k_harmonic=self.fix_rigid_symbiont_params[7]
-                lc_harmonic_12=0.5*(1.0 + beads_symbiont)
-
-                sigma12=float(0.5*(1.0 + beads_symbiont))
-                cutoff_nonrec = float(sigma12*self.fix_rigid_symbiont_params[8])
-                scale_nonrep=float(f"{scale:.4f}")
-
-                print("CUTOFF NONREC : ", cutoff_nonrec)
-                print("SCALE NONREP : ", scale_nonrep)
-                print("EXPONENT : ", exponent)
-                print("SIGMA 12 : ", sigma12)
-                print("ACTIVITY1 : ", activity_1)
-                print("ACTIVITY2 : ", activity_2)
-                print("MOBILITY1 : ", mobility_1)
-                print("MOBILITY2 : ", mobility_2)
-
-                # TO DO: IMPLEMENT EQUILIBRATION IN OTHER TYPES OF INTERACTIONS WE MAY BE INTERESTED IN
-                if not self.equilibrated:
-                    # before equilibration there is still repulsion to prevent overlaps
-                    add_pair("harmonic/cut","","",dedent(f"""\
-                        pair_coeff * * harmonic/cut 0 0
-                        pair_coeff 1 2 harmonic/cut {k_harmonic} {lc_harmonic_12}
-                    """))
-                    # but the non-reciprocal interactions are not there yet to allow the membrane to equilibrate
-                    add_pair("nonreciprocal", "",f"{cutoff_nonrec} {scale_nonrep} {exponent} {sigma12}",dedent(f"""
-                        pair_coeff * * nonreciprocal 0 0 0 0 0
-                    """))
-                else:
-                    # after equilibration all interactions are turned on
-                    add_pair("harmonic/cut","","",dedent(f"""\
-                        pair_coeff * * harmonic/cut 0 0
-                        pair_coeff 1 2 harmonic/cut {k_harmonic} {lc_harmonic_12}
-                    """))
-
-                    add_pair("nonreciprocal", "",f"{cutoff_nonrec} {scale_nonrep} {exponent} {sigma12}",dedent(f"""
-                        pair_coeff * * nonreciprocal 0 0 0 0 0
-                        pair_coeff 1 2 nonreciprocal {activity_1} {activity_2} {mobility_1} {mobility_2} {cutoff_nonrec}
-                    """))
-
+        
         if self.beads.n_beads:
 
             if self.beads.bead_interaction=='nonreciprocal':
@@ -2498,58 +1687,35 @@ class TriLmp():
                 # the parameters are handed as tuples (activity1,mobility1,activity2,mobility2,exponent,scale,k_harmonic,cut_mult)
                 # k_harmonic determines height of bead_membrane harmonic barrier and k_harm_beads the bead-bead repulsion (if bead_self_interaction is set to True) (to do)
                 if self.beads.bead_interaction_params[5]=='auto':
-                    scale=(1+self.beads.bead_interaction_params[4])*0.5*(self.estore.eparams.bond_params.lc1 + self.beads.bead_sizes)*2**(-self.beads.bead_interaction_params[4]) # MMB: discuss with Michael
+                    scale=(1+self.beads.bead_interaction_params[4])*0.5*(self.estore.eparams.bond_params.lc1 + self.beads.bead_sizes)*2**(-self.beads.bead_interaction_params[4])
                 else:
                     scale=self.beads.bead_interaction_params[5]
-
-                if not self.fix_time_dependent_interaction:
-                    activity_1=self.beads.bead_interaction_params[0]
-                    mobility_1=self.beads.bead_interaction_params[1]
-                    activity_2=self.beads.bead_interaction_params[2]
-                    mobility_2=self.beads.bead_interaction_params[3]
-                else:
-                    activity_1=self.beads.bead_interaction_params[0]
-                    mobility_1=self.beads.bead_interaction_params[1]
-                    activity_2=self.beads.bead_interaction_params[2]*program_step
-                    mobility_2=self.beads.bead_interaction_params[3]
-
+                
+                
+                activity_1=self.beads.bead_interaction_params[0]
+                mobility_1=self.beads.bead_interaction_params[1]
+                activity_2=self.beads.bead_interaction_params[2]
+                mobility_2=self.beads.bead_interaction_params[3]
+            
                 # soft-core (harmonic) repulsion
                 k_harmonic=self.beads.bead_interaction_params[6]
                 lc_harmonic_12=0.5*(self.estore.eparams.bond_params.lc1 + self.beads.bead_sizes)
                 lc_harmonic_22=self.beads.bead_sizes
 
+                add_pair("harmonic/cut","","",dedent(f"""\
+                    pair_coeff * * harmonic/cut 0 0
+                    pair_coeff 1 2 harmonic/cut {k_harmonic} {lc_harmonic_12}
+                    pair_coeff 2 2 harmonic/cut {k_harmonic} {lc_harmonic_22}
+                """))
+
                 sigma12=float(0.5*(self.estore.eparams.bond_params.lc1 + self.beads.bead_sizes))
                 cutoff_nonrec = float(sigma12*self.beads.bead_interaction_params[7])
-
                 exponent=self.beads.bead_interaction_params[4]
                 scale_nonrep=float(f"{scale:.4f}")
-
-                # TO DO: IMPLEMENT EQUILIBRATION IN OTHER TYPES OF INTERACTIONS WE MAY BE INTERESTED IN
-                if not self.equilibrated:
-                    # before equilibration there is still repulsion to prevent overlaps
-                    add_pair("harmonic/cut","","",dedent(f"""\
-                        pair_coeff * * harmonic/cut 0 0
-                        pair_coeff 1 2 harmonic/cut {k_harmonic} {lc_harmonic_12}
-                        pair_coeff 2 2 harmonic/cut {k_harmonic} {lc_harmonic_22}
-                    """))
-                    # but the non-reciprocal interactions are not there yet to allow the membrane to equilibrate
-                    add_pair("nonreciprocal", "",f"{cutoff_nonrec} {scale_nonrep} {exponent} {sigma12}",dedent(f"""
-                        pair_coeff * * nonreciprocal 0 0 0 0 0
-                    """))
-                else:
-                    # after equilibration all interactions are turned on
-                    add_pair("harmonic/cut","","",dedent(f"""\
-                        pair_coeff * * harmonic/cut 0 0
-                        pair_coeff 1 2 harmonic/cut {k_harmonic} {lc_harmonic_12}
-                        pair_coeff 2 2 harmonic/cut {k_harmonic} {lc_harmonic_22}
-                    """))
-
-
-                    add_pair("nonreciprocal", "",f"{cutoff_nonrec} {scale_nonrep} {exponent} {sigma12}",dedent(f"""
-                        pair_coeff * * nonreciprocal 0 0 0 0 0
-                        pair_coeff 1 2 nonreciprocal {activity_1} {activity_2} {mobility_1} {mobility_2} {cutoff_nonrec}
-                    """))
-
+                add_pair("nonreciprocal", "",f"{cutoff_nonrec} {scale_nonrep} {exponent} {sigma12}",dedent(f"""
+                    pair_coeff * * nonreciprocal 0 0 0 0 0
+                    pair_coeff 1 2 nonreciprocal {activity_1} {activity_2} {mobility_1} {mobility_2} {cutoff_nonrec}
+                """))
 
             elif self.beads.bead_interaction=='lj/cut':
                 overlay=True
@@ -2557,10 +1723,10 @@ class TriLmp():
                 cutoff=4*bead_ljd
                 cmds:list[str]=[]
                 if self.beads.n_types==1:
-                    cmds.append(dedent(f"""
-                        pair_coeff * * {self.beads.bead_interaction} 0 0 0
-                        pair_coeff 1 2 {self.beads.bead_interaction} {self.beads.bead_interaction_params[0]} {bead_ljd} {bead_ljd*self.beads.bead_interaction_params[1]}
-                        pair_coeff 2 2 {self.beads.bead_interaction} 0 0 0
+                    cmds.append(dedent(f"""                    
+                        pair_coeff * * {self.beads.bead_interaction} 0 0 0                   
+                        pair_coeff 1 2 {self.beads.bead_interaction} {self.beads.bead_interaction_params[0]} {bead_ljd} {bead_ljd*self.beads.bead_interaction_params[1]}  
+                        pair_coeff 2 2 {self.beads.bead_interaction} 0 0 0             
                         """))
                 else:
                     for i in range(self.beads.n_types):
@@ -2578,69 +1744,9 @@ class TriLmp():
             elif self.beads.bead_interaction=='custom':
                 raise NotImplementedError()
                 # self.lmp.commands_string(self.beads.bead_interaction_params)
-
-        # ----------------------------------------------------
-        # GCMC Simulations -- Explicit metabolities
-        # ----------------------------------------------------
-        if self.fix_gcmc:
-
-            overlay = True
-
-            if len(self.fix_gcmc_interaction_parameters)!=3:
-                print("Error in pair_cmds: Incorrect number of parameters")
-                exit(1)
-
-            sigma_membranebeads  = 1.0 # HARDCODED TO BE ONE
-            sigma_metabolites    = self.fix_gcmc_interaction_parameters[0]
-            sigma_tilde          = 0.5*(sigma_membranebeads + sigma_metabolites)
-            interaction_range    = sigma_tilde * self.fix_gcmc_interaction_parameters[1]
-            interaction_strength = self.fix_gcmc_interaction_parameters[2]
-
-            if not self.equilibrated:
-
-                # the only interaction between particles is volume exclusion
-                add_pair("harmonic/cut","","",dedent(f"""\
-                        pair_coeff * * harmonic/cut 0 0
-                        pair_coeff 1 2 harmonic/cut 1000 {sigma_tilde}
-                        pair_coeff 2 2 harmonic/cut 1000 {sigma_metabolites}
-                    """))
-
-            else:
-
-                if self.fix_bond_react == False:
-
-                    # membrane and metabolites attract each other
-                    add_pair("lj/cut","",f"{interaction_range}",dedent(f"""\
-                            pair_coeff * * lj/cut 0 0 0
-                            pair_coeff 1 2 lj/cut {interaction_strength} {sigma_tilde} {interaction_range}
-                            pair_modify pair lj/cut shift yes
-                            """))
-
-                    #metabolites repel each other
-                    add_pair("harmonic/cut","","",dedent(f"""\
-                        pair_coeff * * harmonic/cut 0 0
-                        pair_coeff 2 2 harmonic/cut 1000 {sigma_metabolites}
-                    """))
-
-                elif self.fix_bond_react == True:
-
-                    # after equilibration all interactions are turned on
-                    add_pair("lj/cut","",f"{interaction_range}",dedent(f"""\
-                            pair_coeff * * lj/cut 0 0 0
-                            pair_coeff 1 2 lj/cut {interaction_strength} {sigma_tilde} {interaction_range}
-                            pair_coeff 1 3 lj/cut {interaction_strength} {sigma_tilde} {interaction_range}
-                            pair_modify pair lj/cut shift yes
-                            """))
-
-                    # after metabolites repel each other
-                    add_pair("harmonic/cut","","",dedent(f"""\
-                        pair_coeff * * harmonic/cut 0 0
-                        pair_coeff 2 2 harmonic/cut 1000 {sigma_metabolites}
-                        pair_coeff 3 3 harmonic/cut 1000 {sigma_metabolites}
-                        pair_coeff 2 3 harmonic/cut 1000 {sigma_metabolites}
-                    """))
-
-
+        
+        # todo: check if global cutoff is needed somewhere
+        # global_cutoff=max((cutoff for (name,args,cutoff,cmds) in pairs),default=np.nan)
 
         def pair_style_cmd():
             def pair_style_2_style_cmd(name:str,cutoff:float,args:str):
