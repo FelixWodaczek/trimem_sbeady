@@ -1094,7 +1094,7 @@ class TriLmp():
 
 
             # introduce the fix
-            fix_bond_react_command = "fix freact all bond/react stabilization yes AllAtoms 0.1 reset_mol_ids no "
+            fix_bond_react_command = "fix freact all bond/react reset_mol_ids no "
 
             for r in range(self.fix_bond_react_reactions):
                 fix_bond_react_command += f" react R{r}reaction all v_NeveryR{r} v_RminR{r} v_RmaxR{r} mpre{r} mpost{r} {self.fix_bond_react_reactions_parameters[r][7]} prob v_ReactProbR{r} {self.fix_bond_react_reactions_parameters[r][6]} "
@@ -1241,7 +1241,7 @@ class TriLmp():
                             fix vertexnve vertices nve
                             fix lvt vertices langevin {self.algo_params.initial_temperature} {self.algo_params.initial_temperature}  {self.algo_params.langevin_damp} {self.algo_params.langevin_seed} zero yes tally yes
                                     """
-                    if self.fix_bond_react:
+                    if False: # self.fix_bond_react:
                         # necessary to consider the _REACT underscore
                         lv_thermo_comm=f"""
                             fix LGVThermostat all langevin {self.algo_params.initial_temperature} {self.algo_params.initial_temperature} {self.algo_params.langevin_damp} {self.algo_params.langevin_seed} zero yes tally yes
@@ -1737,7 +1737,7 @@ class TriLmp():
                 self.lmp.commands_string(f"undump myDump")
 
             # remove previous fixes in case
-            self.lmp.commands_string("unfix mynve")
+            self.lmp.commands_string("unfix vertexnve")
             self.lmp.commands_string("unfix lvt")
 
             # start moving everything
@@ -2603,7 +2603,10 @@ class TriLmp():
                 add_pair("harmonic/cut","","",dedent(f"""\
                         pair_coeff * * harmonic/cut 0 0
                         pair_coeff 1 2 harmonic/cut 1000 {sigma_tilde}
+                        pair_coeff 1 3 harmonic/cut 1000 {sigma_tilde}
                         pair_coeff 2 2 harmonic/cut 1000 {sigma_metabolites}
+                        pair_coeff 3 3 harmonic/cut 1000 {sigma_metabolites}
+                        pair_coeff 2 3 harmonic/cut 1000 {sigma_metabolites}
                     """))
 
             else:
