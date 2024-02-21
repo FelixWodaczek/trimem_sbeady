@@ -20,8 +20,12 @@ class SimulationManager():
         self.mesh.vertices *= scaling
         self.postequilibration_lammps_command = []
 
-    def add_pair_coeffs(self):
-        pass
+    @staticmethod
+    def nve_command_string(initial_temperature, langevin_damp, langevin_seed, bds_info_lgv=None):
+        commands = []
+        commands.append("unfix lvt")
+        commands.append(f"fix lvt all langevin {initial_temperature} {initial_temperature} {langevin_damp} {langevin_seed} zero yes {bds_info_lgv}")
+        return '\n'.join(commands)
 
     def run(self):
         # membrane parameters
@@ -36,10 +40,15 @@ class SimulationManager():
         traj_steps=50
         flip_ratio=0.1
         step_size=0.001
-        total_sim_time=100 # 000  # in time units
+        total_sim_time=1000 # 00  # in time units
         discrete_snapshots=10   # in time units
         print_frequency = int(discrete_snapshots/(step_size*traj_steps))
 
+        initial_temperature=1.0,                  # MD PART SIMULATION: temperature of the system
+        pure_MD=True,                             # MD PART SIMULATION: accept every MD trajectory?
+        langevin_damp=1.0
+        langevin_seed=123
+        total_sim_time = self.param_dict['total_sim_time']
         (xlo,xhi,ylo,yhi,zlo,zhi) = (-50, 50, -50, 50, -50, 50)
         switch_mode = 'random'
 
@@ -68,7 +77,11 @@ class SimulationManager():
             performance_increment=print_frequency,    # OUTPUT: output performace stats to prefix_performance.dat file
             energy_increment=print_frequency,         # OUTPUT: output energies to energies.dat file
         )
-        trilmp.run(total_sim_time, fix_symbionts_near=False, integrators_defined=True)
+
+        postequilibration_lammps_commands = []
+        postequilibration_lammps_commands.append(self.nve_command_string(initial_temperature=initial_temperature, langevin_damp=langevin_damp, langevin_seed=langevin_seed, bds_info_lgv='None'))
+
+        trilmp.run(total_sim_time, fix_symbionts_near=False, integrators_defined=True, postequilibration_lammps_commands=postequilibration_lammps_commands)
 
 def main():
     out = SimulationManager().run()
