@@ -215,7 +215,6 @@ class AlgoParams():
                  refresh,
                  thermal_velocities,
                  langevin_thermostat,
-                 brownian_dynamics,
                  langevin_damp,
                  langevin_seed,
                  pure_MD,
@@ -238,7 +237,6 @@ class AlgoParams():
         self.refresh=refresh
         self.thermal_velocities=thermal_velocities
         self.langevin_thermostat=langevin_thermostat
-        self.brownian_dynamics=brownian_dynamics
         self.langevin_damp=langevin_damp
         self.langevin_seed=langevin_seed
         self.pure_MD=pure_MD
@@ -362,7 +360,7 @@ class TriLmp():
                  bead_masses=1.0,               # bead masses
                  bead_types=[],                 # bead types
                  self_interaction=False,        # interaction between nanoparticles
-                 self_interaction_params=(0,0)  # nanoparticle interaction parameters
+                 self_interaction_params=(0,0),  # nanoparticle interaction parameters
 
                  # EXTENSIONS MMB: ELASTIC MEMBRANE/S-LAYER
                  # (must be initialized in init because affects input file)
@@ -429,24 +427,25 @@ class TriLmp():
             "Area": m.BondType.Area
         }
 
-        # used in run() for gcmc simulations TOREMOVE
-        self.fix_gcmc=fix_gcmc
-        self.fix_gcmc_fix_parameters=fix_gcmc_fix_parameters
-        self.fix_gcmc_region_type=fix_gcmc_region_type
-        self.fix_gcmc_region_parameters=fix_gcmc_region_parameters
-        self.fix_gcmc_interaction_parameters=fix_gcmc_interaction_parameters
-        self.fix_gcmc_num_regions=fix_gcmc_num_regions
-        self.fix_gcmc_flag=fix_gcmc_flag
-        if self.fix_gcmc:
-            self.fix_gcmc_flag = 1
+        if False:
+            # used in run() for gcmc simulations TOREMOVE
+            self.fix_gcmc=fix_gcmc
+            self.fix_gcmc_fix_parameters=fix_gcmc_fix_parameters
+            self.fix_gcmc_region_type=fix_gcmc_region_type
+            self.fix_gcmc_region_parameters=fix_gcmc_region_parameters
+            self.fix_gcmc_interaction_parameters=fix_gcmc_interaction_parameters
+            self.fix_gcmc_num_regions=fix_gcmc_num_regions
+            self.fix_gcmc_flag=fix_gcmc_flag
+            if self.fix_gcmc:
+                self.fix_gcmc_flag = 1
 
-        # used when fix bond react TOREMOVE
-        self.fix_bond_react = fix_bond_react
-        self.fix_bond_react_reactions = fix_bond_react_reactions
-        self.fix_bond_react_reactions_parameters = fix_bond_react_reactions_parameters
-        self.fix_bond_react_flag=fix_bond_react_flag
-        if self.fix_bond_react:
-            self.fix_bond_react_flag=1
+            # used when fix bond react TOREMOVE
+            self.fix_bond_react = fix_bond_react
+            self.fix_bond_react_reactions = fix_bond_react_reactions
+            self.fix_bond_react_reactions_parameters = fix_bond_react_reactions_parameters
+            self.fix_bond_react_flag=fix_bond_react_flag
+            if self.fix_bond_react:
+                self.fix_bond_react_flag=1
 
         # used in interaction function
         self.fix_time_dependent_interaction = fix_time_dependent_interaction
@@ -550,7 +549,6 @@ class TriLmp():
                  momentum_variance,flip_ratio,flip_type,initial_temperature,
                  cooling_factor,start_cooling,maxiter,refresh,thermal_velocities,
                 langevin_thermostat,
-                brownian_dynamics,
                 langevin_damp,
                 langevin_seed,
                 pure_MD,
@@ -715,6 +713,7 @@ class TriLmp():
         # create internal lammps instance
         self.lmp = lammps(cmdargs=['-sf','omp'])
         self.L = PyLammps(ptr=self.lmp,verbose=False)
+        total_particle_types = 1+self.beads.n_types
 
         # define atom_style
         atom_style_text = "hybrid bond charge"
@@ -923,11 +922,10 @@ class TriLmp():
 
                     return f
             """))
-
         # write down the table for surface repulsion
         self.lmp.commands_string(dedent(f"""\
         pair_style python {self.eparams.repulse_params.lc1}
-        pair_coeff * * trilmp_srp_pot.SRPTrimem C {'C '*self.num_particle_types}
+        pair_coeff * * trilmp_srp_pot.SRPTrimem {'C '*self.num_particle_types}
         shell rm -f trimem_srp.table
         pair_write  1 1 2000 rsq 0.000001 {self.eparams.repulse_params.lc1} trimem_srp.table trimem_srp 1.0 1.0
         pair_style none
@@ -935,7 +933,7 @@ class TriLmp():
 
         # get the 'table' interaction to work
         self.lmp.commands_string(dedent(f"""\
-        pair_style hybrid/overlay table {self.eparams.repulse_params.lc1} linear 2000 lj/cut 2.5
+        pair_style hybrid/overlay table linear 2000 lj/cut 2.5
         pair_modify pair table special lj/coul 0.0 0.0 0.0 tail no
         pair_coeff 1 1 table trimem_srp.table trimem_srp
         pair_coeff * * lj/cut 0 0 0
@@ -947,7 +945,7 @@ class TriLmp():
 
         # define particle groups
         for pg in range(num_particle_types):
-            self.lmp.command(f'group {group_particle_type[pg]} {pg+1}')
+            self.lmp.command(f'group {group_particle_type[pg]} type {pg+1}')
 
         # LAMMPS ...............................................................
         # VELOCITIES
@@ -1298,8 +1296,8 @@ class TriLmp():
     # when evaluating the gradient                                             #
     ############################################################################
 
-    def halt_symbiont_simulation(self, step, check_outofrange, check_outofrange_freq):
-        if (self.equilibrated) and (check_outofrange) and (i%check_outofrange_freq ==0):
+    def halt_symbiont_simulation(self, step, check_outofrange, check_outofrange_freq, check_outofrange_cutoff):
+        if (self.equilibrated) and (check_outofrange) and (step%check_outofrange_freq ==0):
             pos_alloc=self.lmp.numpy.extract_atom("x")
             self.mesh.x[:] = np.array(pos_alloc[:self.n_vertices])
             self.beads.positions[:] = np.array(pos_alloc[self.n_vertices:self.n_vertices+self.beads.n_beads])
@@ -1334,7 +1332,7 @@ class TriLmp():
         self.flip_step()
         self.timer.timearray_new[1] += (time.time() - t_fix)
 
-    def raise_errors_run(self, integrators_defined, check_outofrange, check_outofrange_freq, check_outofrange_cutoff):
+    def raise_errors_run(self, integrators_defined, check_outofrange, check_outofrange_freq, check_outofrange_cutoff, fix_symbionts_near):
         if check_outofrange and (check_outofrange_freq<0 or check_outofrange_cutoff<0):
             print("ERROR: Incorrect check_outofrange parameters")
             sys.exit(1)
@@ -1357,7 +1355,11 @@ class TriLmp():
 
         print("No errors to report for run. Simulation begins.")
 
-    def run(self, N=0, integrators_defined = False, check_outofrange = False, check_outofrange_freq = -1, check_outofrange_cutoff = -1, fix_symbionts_near = True, fix_symbionts_frozen = False, postequilibration_lammps_commands = None):
+    def run(
+            self, N=0, integrators_defined = False, check_outofrange = False, 
+            check_outofrange_freq = -1, check_outofrange_cutoff = -1, fix_symbionts_near = True, 
+            fix_symbionts_frozen = False, postequilibration_lammps_commands = None
+        ):
 
         """
         MAIN TRILMP FUNCTION: Combine MD + MC runs
@@ -1377,7 +1379,7 @@ class TriLmp():
         """
 
         # check whether there is any initialization error
-        self.raise_errors_run(integrators_defined, check_outofrange, check_outofrange_freq, check_outofrange_cutoff)
+        self.raise_errors_run(integrators_defined, check_outofrange, check_outofrange_freq, check_outofrange_cutoff, fix_symbionts_near)
 
         # determine length simulation
         if N==0:
@@ -1400,7 +1402,7 @@ class TriLmp():
             self.flip_info()
 
             # check if simulation must stop
-            halt_symbiont_simulation(self, step, check_outofrange, check_outofrange_freq)
+            self.halt_symbiont_simulation(i, check_outofrange, check_outofrange_freq, check_outofrange_cutoff)
 
             # post equilibration update, if it applies
             if i==self.equilibration_rounds:
@@ -1799,7 +1801,6 @@ class TriLmp():
 
                 self.algo_params.thermal_velocities,
                 self.algo_params.langevin_thermostat,
-                self.algo_params.brownian_dynamics,
                 self.algo_params.langevin_damp,
                 self.algo_params.langevin_seed,
                 self.algo_params.pure_MD,
@@ -1919,7 +1920,7 @@ class TriLmp():
             return ' '.join(l)
 
         # surface repulsion
-        write_srp_table()
+        # write_srp_table()
 
         pairs:list[tuple[str,float,str,str]]=[]
         overlay=True
