@@ -1,7 +1,7 @@
 import numpy as np
 
 from util import icosphere
-from trimem.mc.trilmp import TriLmp
+from trimem.mc.trilmp import TriLmp, Beads
 from trimesh import Trimesh
 
 class SimulationManager():
@@ -21,14 +21,47 @@ class SimulationManager():
         self.postequilibration_lammps_command = []
 
     @staticmethod
-    def nve_command_string(initial_temperature, langevin_damp, langevin_seed, bds_info_lgv=None):
+    def equilibriation_thermostat_command(initial_temperature, langevin_damp, langevin_seed: int, fix_gcmc: bool=True):
         commands = []
-        commands.append("unfix lvt")
+
+        if fix_gcmc:
+            # necessary to include the nve because we have removed it
+            commands.append(f'fix vertexnve vertices nve')
+            commands.append(f'fix lvt vertices langevin {initial_temperature} {initial_temperature}  {langevin_damp} {langevin_seed} zero yes tally yes')
+            return '\n'.join(commands)
+            
+        commands.append(f"fix lvt vertices langevin {initial_temperature} {initial_temperature}  {langevin_damp} {langevin_seed} zero yes")
+        return '\n'.join(commands)
+            
+    @staticmethod
+    def langevin_commands(membrane_vertex_mass, initial_temperature: float, langevin_damp, langevin_seed: int, beads: Beads = None, length_scale: float = 1.):
+        fix_gcmc = False
+
+        commands = []
+        sc0=membrane_vertex_mass/length_scale
+
+        bds_info_lgv = ''
+
+        if beads is not None:
+            if beads.n_types>1:
+                bds_info_lgv = ''
+                for i in range(beads.n_types):
+                    bds_info_lgv += f'scale {i + 2} {(beads.masses[i] / beads.bead_sizes[i])/sc0} '
+            else:
+                bds_info_lgv=f'scale 2 {(beads.masses / beads.bead_sizes)/sc0}'
+
+            # FIX GCMC (scale the impact of the thermostat on the metabolites - beads masses is by default 1)
+            if fix_gcmc:
+                bds_info_lgv+= f'scale 2 {(beads.masses / beads.bead_sizes[0])/sc0}'
+            
+
+        commands.append("fix mynve all nve")
         commands.append(f"fix lvt all langevin {initial_temperature} {initial_temperature} {langevin_damp} {langevin_seed} zero yes {bds_info_lgv}")
         return '\n'.join(commands)
 
     def run(self):
         # membrane parameters
+        membrane_vertex_mass = 1.0
         kappa_b=20.0
         kappa_a=2.5e5
         kappa_v=2.5e5
@@ -44,11 +77,10 @@ class SimulationManager():
         discrete_snapshots=10   # in time units
         print_frequency = int(discrete_snapshots/(step_size*traj_steps))
 
-        initial_temperature=1.0,                  # MD PART SIMULATION: temperature of the system
-        pure_MD=True,                             # MD PART SIMULATION: accept every MD trajectory?
+        initial_temperature=1.0                    # MD PART SIMULATION: temperature of the system
+        pure_MD=False,                             # MD PART SIMULATION: accept every MD trajectory?
         langevin_damp=1.0
         langevin_seed=123
-        total_sim_time = self.param_dict['total_sim_time']
         (xlo,xhi,ylo,yhi,zlo,zhi) = (-50, 50, -50, 50, -50, 50)
         switch_mode = 'random'
 
@@ -66,6 +98,8 @@ class SimulationManager():
             step_size=step_size,                      # FLUIDITY ---- MD PART SIMULATION: timestep of the simulation
             traj_steps=traj_steps,                    # FLUIDITY ---- MD PART SIMULATION: number of MD steps before bond flipping
             flip_ratio=flip_ratio,                    # MC PART SIMULATION: fraction of edges to flip?
+            check_neigh_every=1,                      # NEIGHBOUR LISTS
+            equilibration_rounds=1,                   # MEMBRANE EQUILIBRATION ROUNDS
 
             box=(xlo,xhi,ylo,yhi,zlo,zhi),
 
@@ -76,15 +110,26 @@ class SimulationManager():
             output_counter=0,                         # OUTPUT: initialize trajectory number in writer class
             performance_increment=print_frequency,    # OUTPUT: output performace stats to prefix_performance.dat file
             energy_increment=print_frequency,         # OUTPUT: output energies to energies.dat file
+            pure_MD=pure_MD,                          # MD PART SIMULATION: accept every MD trajectory?
         )
 
-        postequilibration_lammps_commands = []
-        postequilibration_lammps_commands.append(self.nve_command_string(initial_temperature=initial_temperature, langevin_damp=langevin_damp, langevin_seed=langevin_seed, bds_info_lgv='None'))
+        pre_equilibration_lammps_commands = self.equilibriation_thermostat_command(
+            initial_temperature=initial_temperature, langevin_damp=langevin_damp, langevin_seed=langevin_seed
+        )
+        trilmp.lmp.commands_string('\n'.join([pre_equilibration_lammps_commands]))
 
+        postequilibration_lammps_commands = []
+        postequilibration_lammps_commands.append(f"unfix vertexnve")
+        postequilibration_lammps_commands.append(f"unfix lvt")
+        postequilibration_lammps_commands.append(self.langevin_commands(
+            membrane_vertex_mass=membrane_vertex_mass, initial_temperature=initial_temperature,
+            langevin_damp=langevin_damp, langevin_seed=langevin_seed
+        ))
+        print(pre_equilibration_lammps_commands, postequilibration_lammps_commands)
         trilmp.run(total_sim_time, fix_symbionts_near=False, integrators_defined=True, postequilibration_lammps_commands=postequilibration_lammps_commands)
 
 def main():
-    out = SimulationManager().run()
+    out = SimulationManager(resolution=3).run()
 
 if __name__ == '__main__':
     main()
