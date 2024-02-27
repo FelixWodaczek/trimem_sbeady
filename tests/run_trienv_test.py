@@ -32,10 +32,14 @@ class SimulationManager():
             
         commands.append(f"fix lvt vertices langevin {initial_temperature} {initial_temperature}  {langevin_damp} {langevin_seed} zero yes")
         return '\n'.join(commands)
-            
+    
+    @staticmethod
+    def equilibriation_chemostat_command(n_region, N, X, typem, seedm, Tm, mu, maxp):
+        f"fix mygcmc_{n_region} metabolites gcmc {N} {X} 0 {typem} {seedm} {Tm} {mu} 0 region gcmc_region_{n_region} max {maxp}"
+
     @staticmethod
     def langevin_commands(membrane_vertex_mass, initial_temperature: float, langevin_damp, langevin_seed: int, beads: Beads = None, length_scale: float = 1.):
-        fix_gcmc = False
+        fix_gcmc = True
 
         commands = []
         sc0=membrane_vertex_mass/length_scale
@@ -84,6 +88,29 @@ class SimulationManager():
         (xlo,xhi,ylo,yhi,zlo,zhi) = (-50, 50, -50, 50, -50, 50)
         switch_mode = 'random'
 
+        # GCMC region
+        variable_factor = 10
+        N_gcmc_1=int(variable_factor*langevin_damp/step_size)
+        X_gcmc_1=100
+        seed_gcmc_1 = langevin_seed
+        mu_gcmc_1=0
+        vfrac = 0.01
+        geometric_factor = 1.0
+        sigma_metabolites = 1.0
+        x_membrane_max = np.max(self.mesh.vertices[:, 0])
+        r_mean = np.mean(
+            np.linalg.norm(
+                np.mean(self.mesh.vertices, axis=0)-self.mesh.vertices, axis=1
+            )
+        )
+        height_width = r_mean*geometric_factor
+        gcmc_xlo, gcmc_xhi = x_membrane_max, xhi, # xlo, xhi
+        gcmc_ylo, gcmc_yhi = -height_width/2, height_width/2, # ylo, yhi
+        gcmc_zlo, gcmc_zhi = -height_width/2, height_width/2, # zlo, zhi
+
+        vtotal_region = (xhi-x_membrane_max)*(height_width)*(height_width)
+        max_gcmc_1 = int((vfrac*vtotal_region*3)/(4*np.pi*(sigma_metabolites*0.5)**3))
+
         trilmp = TriLmp(
             initialize=True,                          # use mesh to initialize mesh reference
             mesh_points=self.mesh.vertices,           # input mesh vertices
@@ -95,6 +122,10 @@ class SimulationManager():
             kappa_t=kappa_t,                          # MEMBRANE MECHANICS: tethering potential to constrain edge length (kB T)
             kappa_r=kappa_r,                          # MEMBRANE MECHANICS: repulsive potential to prevent surface intersection (kB T)
             
+            num_particle_types=2,                       # how many particle types will there be in the system
+            mass_particle_type=[membrane_vertex_mass, 1],# the mass of the particle per type
+            group_particle_type=['vertices', 'metabolites'],
+
             step_size=step_size,                      # FLUIDITY ---- MD PART SIMULATION: timestep of the simulation
             traj_steps=traj_steps,                    # FLUIDITY ---- MD PART SIMULATION: number of MD steps before bond flipping
             flip_ratio=flip_ratio,                    # MC PART SIMULATION: fraction of edges to flip?
@@ -113,19 +144,28 @@ class SimulationManager():
             pure_MD=pure_MD,                          # MD PART SIMULATION: accept every MD trajectory?
         )
 
+        # add a gcmc region
+        trilmp.lmp.commands_string(f"region gcmc_region_{1} block {gcmc_xlo} {gcmc_xhi} {gcmc_ylo} {gcmc_yhi} {gcmc_zlo} {gcmc_zhi} side in")
+
         pre_equilibration_lammps_commands = self.equilibriation_thermostat_command(
-            initial_temperature=initial_temperature, langevin_damp=langevin_damp, langevin_seed=langevin_seed
+            initial_temperature=initial_temperature, langevin_damp=langevin_damp, langevin_seed=langevin_seed, fix_gcmc=True
         )
+        pre_equilibration_lammps_commands.append(self.equilibriation_chemostat_command(
+            n_region=1, N=N_gcmc_1, X=X_gcmc_1, typem=2, seedm=langevin_seed, Tm=1.0, mu=mu_gcmc_1, maxp=max_gcmc_1
+        ))
+
         trilmp.lmp.commands_string('\n'.join([pre_equilibration_lammps_commands]))
 
         postequilibration_lammps_commands = []
+        # Unfix stuff for some reason if in equilibriation
         postequilibration_lammps_commands.append(f"unfix vertexnve")
         postequilibration_lammps_commands.append(f"unfix lvt")
+
+
         postequilibration_lammps_commands.append(self.langevin_commands(
             membrane_vertex_mass=membrane_vertex_mass, initial_temperature=initial_temperature,
             langevin_damp=langevin_damp, langevin_seed=langevin_seed
         ))
-        print(pre_equilibration_lammps_commands, postequilibration_lammps_commands)
         trilmp.run(total_sim_time, fix_symbionts_near=False, integrators_defined=True, postequilibration_lammps_commands=postequilibration_lammps_commands)
 
 def main():
