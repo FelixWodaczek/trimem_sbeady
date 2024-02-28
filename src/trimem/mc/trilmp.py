@@ -1475,8 +1475,8 @@ class TriLmp():
 
                 # add commands that you would like LAMMPS to know of after the equilibration
                 if postequilibration_lammps_commands:
-                    for command in range(len(postequilibration_lammps_commands)):
-                        self.lmp.commands_string(postequilibration_lammps_commands[command])
+                    for command in postequilibration_lammps_commands:
+                        self.lmp.commands_string(command)
 
     ############################################################################
     #                    *SELF FUNCTIONS*: WRAPPER FUNCTIONS                   #
@@ -1904,7 +1904,8 @@ class TriLmp():
 
     # add several interactions
     def pair_cmds(self):
-
+        # TODO: is this still needed?
+        # TODO: what is even going on here? Why 3 layer nested functions?
         def add_pair(name:str,cutoff:float,args:str,modify_coeff_cmds:str):
             pairs.append((name,cutoff,args,modify_coeff_cmds))
 

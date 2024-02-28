@@ -4,9 +4,71 @@ from util import icosphere
 from trimem.mc.trilmp import TriLmp, Beads
 from trimesh import Trimesh
 
+class BasePairStyle():
+    def __init__(self, name: str, coeff_commands: list[str] = [], modify_commands: list[str] = []):
+        self.name = name
+        self.coeff_commands = coeff_commands
+        self.modify_commands = modify_commands
+
+    @property
+    def init_params(self) -> list:
+        return []
+
+    def get_init_string(self) -> str:
+        return ' '.join([self.name]+self.init_params)
+    
+    def parse_coeff_commands(self):
+        return ['pair_coeff '+ coeff_command for coeff_command in self.coeff_commands]
+    
+    def parse_modify_commands(self):
+        return ['pair_modify '+ modify_command for modify_command in self.modify_commands]
+
+class TablePairStyle(BasePairStyle):
+    def __init__(self, style: str = 'linear', N: int = 2000, *args, **kwargs):
+        super().__init__(name='table', *args, **kwargs)
+        self.style = style
+        self.N = N
+
+    @property
+    def init_params(self) -> list:
+        return [self.style, str(self.N)]
+    
+class LJCutPairStyle(BasePairStyle):
+    def __init__(self, cutoff: float=2.5, *args, **kwargs):
+        super().__init__(name='lj/cut', *args, **kwargs)
+        self.cutoff = cutoff
+
+    @property
+    def init_params(self) -> list:
+        return [str(self.cutoff)]
+    
+    def set_membrane_attraction(self, n_types, interaction_strength, sigma_tilde, interaction_range):
+        self.coeff_commands = ['* * lj/cut 0 0 0']
+        for i_regular in range(1, n_types):
+            self.coeff_commands.append(f'1 {i_regular+1} lj/cut {interaction_strength} {sigma_tilde} {interaction_range*sigma_tilde}')
+        
+        self.modify_commands = ['pair lj/cut shift yes']
+
+class HarmonicCutPairStyle(BasePairStyle):
+    def __init__(self, *args, **kwargs):
+        super().__init__(name='harmonic/cut', *args, **kwargs)
+
+    def set_metabolite_repulsive_commands(self, n_types, sigma_metabolites):
+        self.coeff_commands = ['* * harmonic/cut 0 0']
+        # Add interactions between regular particles
+        for i_regular in range(1, n_types):
+            for j_regular in range(i_regular, n_types):
+                self.coeff_commands.append(f"{i_regular+1} {j_regular+1} harmonic/cut 1000 {sigma_metabolites}")
+
+    def set_all_repulsive_commands(self, n_types, sigma_metabolites, sigma_special):
+        self.set_metabolite_repulsive_commands(n_types=n_types, sigma_metabolites=sigma_metabolites)
+
+        # Add interactions with special sphere
+        for i_regular in range(1, n_types):
+            self.coeff_commands.append(f"1 {i_regular+1} harmonic/cut 1000 {sigma_special}")
+
 class SimulationManager():
     def __init__(self, sigma_membrane=1.0, resolution=2):
-
         self.sigma_membrane = sigma_membrane
         self.resolution = resolution
 
@@ -19,6 +81,8 @@ class SimulationManager():
         scaling = desired_average_distance/current_average_distance
         self.mesh.vertices *= scaling
         self.postequilibration_lammps_command = []
+
+        self.pair_styles: list[BasePairStyle] = []
 
     def init_trilmp(self):
         # membrane parameters
@@ -45,6 +109,10 @@ class SimulationManager():
         (xlo,xhi,ylo,yhi,zlo,zhi) = (-50, 50, -50, 50, -50, 50)
         switch_mode = 'random'
 
+        # Interaction parameters
+        self.interaction_range = 1.5 # rc_mm
+        self.interaction_strength = 10
+
         # GCMC region
         variable_factor = 10
         self.N_gcmc_1=int(variable_factor*self.langevin_damp/step_size)
@@ -53,7 +121,8 @@ class SimulationManager():
         self.mu_gcmc_1=0
         vfrac = 0.01
         geometric_factor = 1.0
-        sigma_metabolites = 1.0
+        self.sigma_metabolites = 1.0
+        self.sigma_tilde_membrane_metabolites = 0.5*(self.sigma_metabolites+self.sigma_membrane)
         x_membrane_max = np.max(self.mesh.vertices[:, 0])
         r_mean = np.mean(
             np.linalg.norm(
@@ -66,7 +135,7 @@ class SimulationManager():
         self.gcmc_zlo, self.gcmc_zhi = -height_width/2, height_width/2, # zlo, zhi
 
         vtotal_region = (xhi-x_membrane_max)*(height_width)*(height_width)
-        self.max_gcmc_1 = int((vfrac*vtotal_region*3)/(4*np.pi*(sigma_metabolites*0.5)**3))
+        self.max_gcmc_1 = int((vfrac*vtotal_region*3)/(4*np.pi*(self.sigma_metabolites*0.5)**3))
 
         self.trilmp = TriLmp(
             initialize=True,                          # use mesh to initialize mesh reference
@@ -148,23 +217,49 @@ class SimulationManager():
     def walls_command(ylo, yhi, zlo, zhi):
         return f"fix ConfinementMet metabolites wall/reflect xhi EDGE ylo {ylo} yhi {yhi} zlo {zlo} zhi {zhi}"
 
-    def run(self):
-        
+    def get_pair_style_commands(self):
+        # This command tells lamps all the styles that are to be expected
+        style_command = f"pair_style hybrid/overlay"
+        coeff_and_modify_commands = []
+        for pair_style in self.pair_styles:
+            # add parameter and initial parameters
+            style_command = ' '.join([style_command, pair_style.get_init_string()])
+            coeff_and_modify_commands += pair_style.parse_coeff_commands() + pair_style.parse_modify_commands()
 
+        return '\n'.join([style_command]+coeff_and_modify_commands)
+            
+    def run(self):
+        table_ps = TablePairStyle(
+            style='linear', N=2000,
+            coeff_commands = ['1 1 table trimem_srp.table trimem_srp'],
+            modify_commands = ['pair table special lj/coul 0.0 0.0 0.0 tail no']
+        )
+        harmonic_ps = HarmonicCutPairStyle()
+        harmonic_ps.set_all_repulsive_commands(2, self.sigma_membrane, self.sigma_tilde_membrane_metabolites)
+        lj_ps = LJCutPairStyle(cutoff=2.5)
+        lj_ps.set_membrane_attraction(2, interaction_strength=self.interaction_strength, sigma_tilde=self.sigma_tilde_membrane_metabolites, interaction_range=self.interaction_range)
+        self.pair_styles = [table_ps, harmonic_ps]
+        
         # add a gcmc region
         self.trilmp.lmp.commands_string(f"region gcmc_region_{1} block {self.gcmc_xlo} {self.gcmc_xhi} {self.gcmc_ylo} {self.gcmc_yhi} {self.gcmc_zlo} {self.gcmc_zhi} side in")
 
         pre_equilibration_lammps_commands = []
+        # Add walls before equilibriation
         pre_equilibration_lammps_commands.append(self.walls_command(
             self.gcmc_ylo, self.gcmc_yhi, self.gcmc_zlo, self.gcmc_zhi
         ))
+        # Set equilibriation thermostat
+        # TODO: only different because of tally yes, remove?
         pre_equilibration_lammps_commands.append(self.equilibriation_thermostat_command(
             initial_temperature=self.initial_temperature, langevin_damp=self.langevin_damp, langevin_seed=self.langevin_seed, fix_gcmc=True
         ))
+        # Set chemostat before equilibriation
         pre_equilibration_lammps_commands.append(self.equilibriation_chemostat_command(
             n_region=1, N=self.N_gcmc_1, X=self.X_gcmc_1, typem=2, seedm=self.langevin_seed, Tm=1.0, mu=self.mu_gcmc_1, maxp=self.max_gcmc_1
         ))
+        pre_equilibration_lammps_commands.append(self.get_pair_style_commands())
         
+        # Set interaction parameters
         self.trilmp.lmp.commands_string('\n'.join(pre_equilibration_lammps_commands))
 
         postequilibration_lammps_commands = []
@@ -173,10 +268,16 @@ class SimulationManager():
         postequilibration_lammps_commands.append(f"unfix lvt")
 
 
+        # Fix thermostat again without tally yes
         postequilibration_lammps_commands.append(self.langevin_commands(
             membrane_vertex_mass=self.membrane_vertex_mass, initial_temperature=self.initial_temperature,
             langevin_damp=self.langevin_damp, langevin_seed=self.langevin_seed
         ))
+        # Activate attraction and reset interactions
+        harmonic_ps.set_metabolite_repulsive_commands(n_types=2, sigma_metabolites=self.sigma_metabolites)
+        self.pair_styles += [lj_ps]
+        postequilibration_lammps_commands.append(self.get_pair_style_commands())
+
         self.trilmp.run(self.total_sim_time, fix_symbionts_near=False, integrators_defined=True, postequilibration_lammps_commands=postequilibration_lammps_commands)
 
 def main():
