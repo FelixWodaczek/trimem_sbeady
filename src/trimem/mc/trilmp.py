@@ -64,7 +64,7 @@
 ################################################################################
 
 import re,textwrap, warnings, psutil, os, sys, time, pickle, pathlib
-from typing import Sequence
+from typing import Union as pyUnion # to avoid confusion with ctypes.Union
 from datetime import datetime, timedelta
 from copy import copy
 
@@ -313,6 +313,7 @@ class TriLmp():
 
                  # MD SIMULATION PARAMETERS
                  box=(-100,100,-100,100,-100,100),    # simulation box
+                 periodic=False,                      # periodic boundary conditions
                  thermal_velocities=False,            # thermal reset of velocities at the begin of each MD step
                  langevin_thermostat=True,            # use langevin thermostat
                  langevin_damp=0.01,                  # damping time for thermostat
@@ -321,7 +322,7 @@ class TriLmp():
                  switch_mode='random',                # 'random' or 'alternating': sequence of MD, MC stages
                  equilibrated=False,                  # equilibration state of membrane
                  equilibration_rounds=-1,             # number of equilibration rounds
-                 check_neigh_every=1,                 # neighbour list checking (when applicable - not for gcmc)
+                 # check_neigh_every=1,                 # neighbour list checking (when applicable - not for gcmc)
 
                  # OUTPUT FILE PARAMETERS
                  info=10,                     # output hmc and flip info to shell every nth step
@@ -411,7 +412,7 @@ class TriLmp():
         self.equilibration_rounds = equilibration_rounds
         self.acceptance_rate      = 0.0
         self.print_bending_energy = print_bending_energy
-        self.check_neigh_every    = check_neigh_every
+        # self.check_neigh_every    = check_neigh_every
         self.num_particle_types   = num_particle_types
 
         # used for (TRIMEM) minimization
@@ -713,7 +714,7 @@ class TriLmp():
         # create internal lammps instance
         self.lmp = lammps(cmdargs=['-sf','omp'])
         self.L = PyLammps(ptr=self.lmp,verbose=False)
-        total_particle_types = 1+self.beads.n_types
+        total_particle_types = num_particle_types # 1+self.beads.n_types
 
         # define atom_style
         atom_style_text = "hybrid bond charge"
@@ -723,11 +724,14 @@ class TriLmp():
             atom_style_text = "full" # molecular (we need dihedrals) + charge
             bond_dihedral_text+=" dihedral/types 1"
             bond_dihedral_text+=" extra/dihedral/per/atom 14"
+        
+        boundary_string = self.parse_boundary(periodic)
 
         basic_system = dedent(f"""\
             units lj
             dimension 3
             package omp 0
+            boundary {boundary_string}
 
             atom_style    {atom_style_text}
             atom_modify sort 0 0.0
@@ -1946,6 +1950,14 @@ class TriLmp():
             l.append(pair[-1])
         return '\n'.join(l)
 
+    @staticmethod
+    def parse_boundary(periodic: pyUnion[bool, list[bool]]) -> str:
+        if isinstance(periodic, bool):
+            return "p p p" if periodic else "f f f"
+        elif isinstance(periodic, list) and len(periodic) == 3:
+            return " ".join("p" if p else "f" for p in periodic)
+        else:
+            raise ValueError("periodic must be a bool or a list of 3 bools")
 ################################################################################
 #                       READ AND LOAD CHECKPOINTS                              #
 ################################################################################
