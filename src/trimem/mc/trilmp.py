@@ -380,15 +380,6 @@ class TriLmp():
                  fix_rigid_symbiont_interaction=None,   # interactions of the rigid symbiont
                  fix_rigid_symbiont_params=None,        # parameters for the membrane-rigid symbiont interaction
 
-                 # GCMC METABOLITES TOREMOVE
-                 fix_gcmc=False,
-                 fix_gcmc_region_type='block',
-                 fix_gcmc_region_parameters=None,
-                 fix_gcmc_fix_parameters=None,
-                 fix_gcmc_interaction_parameters=None,
-                 fix_gcmc_flag=0,
-                 fix_gcmc_num_regions=0,
-
                  # FIX BOND REACT OF METABOLITES TOREMOVE
                  fix_bond_react=False,
                  fix_bond_react_reactions=0,
