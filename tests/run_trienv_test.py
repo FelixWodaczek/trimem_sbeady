@@ -1,3 +1,4 @@
+from pathlib import Path
 import numpy as np
 
 from util import icosphere
@@ -45,7 +46,7 @@ class LJCutPairStyle(BasePairStyle):
     def set_membrane_attraction(self, n_types, interaction_strength, sigma_tilde, interaction_range):
         self.coeff_commands = ['* * lj/cut 0 0 0']
         for i_regular in range(1, n_types):
-            self.coeff_commands.append(f'1 {i_regular+1} lj/cut {interaction_strength} {sigma_tilde} {interaction_range*sigma_tilde}')
+            self.coeff_commands.append(f'1 {i_regular+1} lj/cut {interaction_strength} {sigma_tilde} {interaction_range}')
         
         self.modify_commands = ['pair lj/cut shift yes']
 
@@ -67,6 +68,32 @@ class HarmonicCutPairStyle(BasePairStyle):
         for i_regular in range(1, n_types):
             self.coeff_commands.append(f"1 {i_regular+1} harmonic/cut 1000 {sigma_special}")
 
+class Reaction():
+    def __init__(
+        self, 
+        name: str, 
+        pretransform_template: Path, posttransform_template: Path, map_template: Path,
+        Nevery: float, Rmin: float, Rmax: float, prob:float, seed: int=123
+    ):
+        self.name = name
+        self.pretransform_template = Path(pretransform_template)
+        self.posttransform_template = Path(posttransform_template)
+        self.map_template = Path(map_template)
+        self.Nevery = Nevery
+        self.Rmin = Rmin
+        self.Rmax = Rmax
+        self.prob = prob
+        self.seed = seed
+    
+    def get_molecule_commands(self) -> list[str]:
+        return [
+            f"molecule mpre{self.name} {self.pretransform_template}",
+            f"molecule mpost{self.name} {self.posttransform_template}",
+        ]
+    
+    def get_reaction_string(self) -> str:
+        return f"react {self.name} all {self.Nevery} {self.Rmin} {self.Rmax} mpre{self.name} mpost{self.name} {self.map_template} prob {self.prob} {self.seed}"
+
 class SimulationManager():
     def __init__(self, sigma_membrane=1.0, resolution=2):
         self.sigma_membrane = sigma_membrane
@@ -83,6 +110,7 @@ class SimulationManager():
         self.postequilibration_lammps_command = []
 
         self.pair_styles: list[BasePairStyle] = []
+        self.reactions: list[Reaction] = []
 
     def init_trilmp(self):
         # membrane parameters
@@ -123,6 +151,8 @@ class SimulationManager():
         geometric_factor = 1.0
         self.sigma_metabolites = 1.0
         self.sigma_tilde_membrane_metabolites = 0.5*(self.sigma_metabolites+self.sigma_membrane)
+        self.interaction_range_tilde = self.interaction_range*self.sigma_tilde_membrane_metabolites
+
         x_membrane_max = np.max(self.mesh.vertices[:, 0])
         r_mean = np.mean(
             np.linalg.norm(
@@ -148,9 +178,9 @@ class SimulationManager():
             kappa_t=kappa_t,                          # MEMBRANE MECHANICS: tethering potential to constrain edge length (kB T)
             kappa_r=kappa_r,                          # MEMBRANE MECHANICS: repulsive potential to prevent surface intersection (kB T)
             
-            num_particle_types=2,                       # how many particle types will there be in the system
-            mass_particle_type=[self.membrane_vertex_mass, 1.],# the mass of the particle per type
-            group_particle_type=['vertices', 'metabolites'],
+            num_particle_types=3,                       # how many particle types will there be in the system
+            mass_particle_type=[self.membrane_vertex_mass, 1., 1.],# the mass of the particle per type
+            group_particle_type=['vertices', 'metabolites', 'waste'],
 
             step_size=step_size,                      # FLUIDITY ---- MD PART SIMULATION: timestep of the simulation
             traj_steps=traj_steps,                    # FLUIDITY ---- MD PART SIMULATION: number of MD steps before bond flipping
@@ -228,38 +258,76 @@ class SimulationManager():
 
         return '\n'.join([style_command]+coeff_and_modify_commands)
             
+    def get_chemistry_commands(self):
+        molecule_template_commands = []
+        chemistry_strings = ["fix freact all bond/react reset_mol_ids no"]
+        for reaction in self.reactions:
+            molecule_template_commands += reaction.get_molecule_commands()
+            chemistry_strings.append(reaction.get_reaction_string())
+
+        return '\n'.join(molecule_template_commands + [' '.join(chemistry_strings)])
+    
     def run(self):
+        # Define pair styles
         table_ps = TablePairStyle(
             style='linear', N=2000,
             coeff_commands = ['1 1 table trimem_srp.table trimem_srp'],
             modify_commands = ['pair table special lj/coul 0.0 0.0 0.0 tail no']
         )
         harmonic_ps = HarmonicCutPairStyle()
-        harmonic_ps.set_all_repulsive_commands(2, self.sigma_membrane, self.sigma_tilde_membrane_metabolites)
+        harmonic_ps.set_all_repulsive_commands(3, self.sigma_membrane, self.sigma_tilde_membrane_metabolites)
         lj_ps = LJCutPairStyle(cutoff=2.5)
-        lj_ps.set_membrane_attraction(2, interaction_strength=self.interaction_strength, sigma_tilde=self.sigma_tilde_membrane_metabolites, interaction_range=self.interaction_range)
+        lj_ps.set_membrane_attraction(3, interaction_strength=self.interaction_strength, sigma_tilde=self.sigma_tilde_membrane_metabolites, interaction_range=self.interaction_range_tilde)
+        
+        # Add pair styles to self
         self.pair_styles = [table_ps, harmonic_ps]
+
+        # Add reactions
+        self.reactions = [
+            Reaction(
+                name='Transform',
+                pretransform_template='reaction_templates/pre_TransformMetabolites.txt',
+                posttransform_template='reaction_templates/post_TransformMetabolites.txt',
+                map_template='reaction_templates/map_TransformMetabolites.txt',
+                Nevery=10, Rmin=self.sigma_tilde_membrane_metabolites, Rmax=self.interaction_range_tilde, prob=1., seed=2430
+            ), 
+            Reaction(
+                name='DegradeWaste',
+                pretransform_template='reaction_templates/pre_DegradeWaste.txt',
+                posttransform_template='reaction_templates/post_DegradeWaste.txt',
+                map_template='reaction_templates/map_DegradeWaste.txt',
+                Nevery=10+1, Rmin=self.sigma_tilde_membrane_metabolites, Rmax=self.interaction_range_tilde, prob=1., seed=2430+19
+            )
+        ]
         
         # add a gcmc region
         self.trilmp.lmp.commands_string(f"region gcmc_region_{1} block {self.gcmc_xlo} {self.gcmc_xhi} {self.gcmc_ylo} {self.gcmc_yhi} {self.gcmc_zlo} {self.gcmc_zhi} side in")
 
         pre_equilibration_lammps_commands = []
+
         # Add walls before equilibriation
         pre_equilibration_lammps_commands.append(self.walls_command(
             self.gcmc_ylo, self.gcmc_yhi, self.gcmc_zlo, self.gcmc_zhi
         ))
+
         # Set equilibriation thermostat
         # TODO: only different because of tally yes, remove?
         pre_equilibration_lammps_commands.append(self.equilibriation_thermostat_command(
             initial_temperature=self.initial_temperature, langevin_damp=self.langevin_damp, langevin_seed=self.langevin_seed, fix_gcmc=True
         ))
+
         # Set chemostat before equilibriation
         pre_equilibration_lammps_commands.append(self.equilibriation_chemostat_command(
             n_region=1, N=self.N_gcmc_1, X=self.X_gcmc_1, typem=2, seedm=self.langevin_seed, Tm=1.0, mu=self.mu_gcmc_1, maxp=self.max_gcmc_1
         ))
-        pre_equilibration_lammps_commands.append(self.get_pair_style_commands())
-        
+
         # Set interaction parameters
+        pre_equilibration_lammps_commands.append(self.get_pair_style_commands())
+        print("CHEMISTRY")
+        print(self.get_chemistry_commands())
+        # Set chemistries
+        pre_equilibration_lammps_commands.append(self.get_chemistry_commands())
+
         self.trilmp.lmp.commands_string('\n'.join(pre_equilibration_lammps_commands))
 
         postequilibration_lammps_commands = []
@@ -267,14 +335,14 @@ class SimulationManager():
         postequilibration_lammps_commands.append(f"unfix vertexnve")
         postequilibration_lammps_commands.append(f"unfix lvt")
 
-
         # Fix thermostat again without tally yes
         postequilibration_lammps_commands.append(self.langevin_commands(
             membrane_vertex_mass=self.membrane_vertex_mass, initial_temperature=self.initial_temperature,
             langevin_damp=self.langevin_damp, langevin_seed=self.langevin_seed
         ))
+
         # Activate attraction and reset interactions
-        harmonic_ps.set_metabolite_repulsive_commands(n_types=2, sigma_metabolites=self.sigma_metabolites)
+        harmonic_ps.set_metabolite_repulsive_commands(n_types=3, sigma_metabolites=self.sigma_metabolites)
         self.pair_styles += [lj_ps]
         postequilibration_lammps_commands.append(self.get_pair_style_commands())
 
