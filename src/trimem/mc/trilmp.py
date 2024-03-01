@@ -380,13 +380,6 @@ class TriLmp():
                  fix_rigid_symbiont_interaction=None,   # interactions of the rigid symbiont
                  fix_rigid_symbiont_params=None,        # parameters for the membrane-rigid symbiont interaction
 
-                 # FIX BOND REACT OF METABOLITES TOREMOVE
-                 fix_bond_react=False,
-                 fix_bond_react_reactions=0,
-                 fix_bond_react_reactions_parameters=None,
-                 fix_bond_react_interactions=None,
-                 fix_bond_react_flag=0,
-
                  # MAKE TIME-DEPENDENT INTERACTION TOREMOVE?
                  fix_time_dependent_interaction=False,
 
@@ -418,26 +411,6 @@ class TriLmp():
             "Edge": m.BondType.Edge,
             "Area": m.BondType.Area
         }
-
-        if False:
-            # used in run() for gcmc simulations TOREMOVE
-            self.fix_gcmc=fix_gcmc
-            self.fix_gcmc_fix_parameters=fix_gcmc_fix_parameters
-            self.fix_gcmc_region_type=fix_gcmc_region_type
-            self.fix_gcmc_region_parameters=fix_gcmc_region_parameters
-            self.fix_gcmc_interaction_parameters=fix_gcmc_interaction_parameters
-            self.fix_gcmc_num_regions=fix_gcmc_num_regions
-            self.fix_gcmc_flag=fix_gcmc_flag
-            if self.fix_gcmc:
-                self.fix_gcmc_flag = 1
-
-            # used when fix bond react TOREMOVE
-            self.fix_bond_react = fix_bond_react
-            self.fix_bond_react_reactions = fix_bond_react_reactions
-            self.fix_bond_react_reactions_parameters = fix_bond_react_reactions_parameters
-            self.fix_bond_react_flag=fix_bond_react_flag
-            if self.fix_bond_react:
-                self.fix_bond_react_flag=1
 
         # used in interaction function
         self.fix_time_dependent_interaction = fix_time_dependent_interaction
