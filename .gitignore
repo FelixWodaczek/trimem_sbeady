@@ -15,12 +15,3 @@ src/trimem/_version.py
 __pycache__
 *.swp
 venv
-
-# Output data created when running trilmp in tests
-tests/**/*.txt
-tests/**/*.dat
-tests/**/*.cpt
-tests/**/*.in
-tests/**/*.lammps
-tests/**/*.table
-tests/**/*pot.py
