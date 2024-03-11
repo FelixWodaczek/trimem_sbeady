@@ -362,6 +362,7 @@ class TriLmp():
                  bead_types=[],                 # bead types
                  self_interaction=False,        # interaction between nanoparticles
                  self_interaction_params=(0,0),  # nanoparticle interaction parameters
+                 n_bond_types = 1,
 
                  # EXTENSIONS MMB: ELASTIC MEMBRANE/S-LAYER
                  # (must be initialized in init because affects input file)
@@ -600,7 +601,6 @@ class TriLmp():
                     bond_style zero nocoeff
                     bond_coeff * * 0.0  """
 
-        n_bond_types=1
         n_tethers=0
         add_tether=False
 
